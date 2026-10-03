@@ -1,0 +1,18 @@
+[project]
+name = "ssh-gate"
+version = "0.4.2"
+description = "Local SSH access gateway for OpenAI Secure MCP Tunnel"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "mcp==1.30.0",
+    "paramiko>=4.0,<5",
+    "pywebview>=6.1,<7",
+    "httpx>=0.28,<0.29",
+    "cryptography>=46,<47",
+]
+
+[dependency-groups]
+build = ["pyinstaller>=6.16,<7"]
+
+[tool.uv]
+package = false

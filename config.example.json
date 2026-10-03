@@ -1,0 +1,32 @@
+{
+  "listen_port": 8765,
+  "approval_timeout_seconds": 600,
+  "max_command_timeout_seconds": 3600,
+  "output_limit_bytes": 1048576,
+  "auto_allow_readonly": true,
+  "ui": {
+    "motion_enabled": true,
+    "scale_percent": 100
+  },
+  "ssh_executable": "",
+  "servers": [
+    {
+      "id": "server",
+      "label": "我的 Linux 服务器",
+      "ssh_target": "my-server",
+      "default_cwd": ".",
+      "port": null,
+      "identity_file": "",
+      "ssh_config_file": "",
+      "auto_categories": [],
+      "auto_roots": []
+    }
+  ],
+  "tunnel": {
+    "id": "",
+    "client_path": "bin/tunnel-client.exe",
+    "health_port": 8766,
+    "proxy_mode": "auto",
+    "proxy_url": ""
+  }
+}
