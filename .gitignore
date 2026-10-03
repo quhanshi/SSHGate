@@ -1,0 +1,25 @@
+# Local runtime/configuration
+config.json
+logs/
+transfers/
+.venv/
+
+# Credential-store artifacts (normal builds keep these outside the project)
+credentials.json
+master.key
+*.key.tmp
+credentials.json.tmp
+
+# Python / test cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Frontend / build output
+frontend/node_modules/
+frontend/dist/
+build/
+dist/
+
+# Downloaded runtime binaries
+bin/
