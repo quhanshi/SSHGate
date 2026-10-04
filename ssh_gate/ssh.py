@@ -477,7 +477,12 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
             if stop.is_set(): return RunResult(None,disconnected=True,termination={"state":"not_started","remote_group_terminated":True})
             operation=getattr(payload,"operation","command")
             roots=getattr(payload,"policy_roots",())
-            if operation!="command" or roots:
+            try:
+                first = shlex.split(getattr(payload, "command", ""))[0]
+            except (ValueError, IndexError):
+                first = ""
+            direct_git = operation == "command" and first.rsplit('/', 1)[-1] == 'git'
+            if operation!="command" or roots or direct_git:
                 from .filesystem import resolve_path, operation as file_operation
                 from .policies import scope_contains
                 observe(phase="opening_sftp")
@@ -489,19 +494,36 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
                     canonical=sftp.normalize(target)
                     if not scope_contains(canonical,roots): raise ValueError("实际目标目录不在本地自动授权范围内")
                     if operation=="command" and payload.policy_category=="read_fs":
-                        for arg in shlex.split(payload.command)[1:]:
-                            if arg.startswith('-'): continue
+                        from .readonly import scoped_read_paths
+                        for arg in scoped_read_paths(payload.command):
                             operand=resolve_path(sftp,arg,payload.cwd)
-                            try: actual=sftp.normalize(operand)
-                            except OSError: continue
+                            if not scope_contains(operand,roots): raise ValueError("命令参数路径超出自动授权目录")
+                            actual=sftp.normalize(operand)
                             if not scope_contains(actual,roots): raise ValueError("命令参数路径超出自动授权目录")
+                if operation == "inspect_repository":
+                    from .git_policy import inspect_repository
+                    result = inspect_repository(client, sftp, args["path"] if roots else json.loads(payload.arguments)["path"],
+                                                stop, payload.github_hosts)
+                    return RunResult(0, result=result)
+                if direct_git:
+                    from .git_policy import check_git_command
+                    observe(phase="checking_repository")
+                    context = check_git_command(client, sftp, payload.command, payload.cwd, stop,
+                                                payload.policy_category, payload.github_hosts)
+                    if roots and context.get("repo_path") and not scope_contains(context["repo_path"], roots):
+                        raise ValueError("实际 Git 仓库根目录超出授权范围")
                 if operation!="command":
                     result=file_operation(sftp,payload,self.transfers,stop,observe)
                     return RunResult(0,result=result)
             observe(phase="executing")
+            authorizer = getattr(self, "execution_authorizer", None)
+            if authorizer:
+                authorizer(payload)
             channel=client.get_transport().open_session(timeout=15)
             channel.settimeout(5)
             if stop.is_set(): return RunResult(None,disconnected=True,termination={"state":"not_started","remote_group_terminated":True})
+            if authorizer:
+                authorizer(payload)
             channel.exec_command(payload.remote_command); launched=True
             channel.shutdown_write()
             deadline=time.monotonic()+payload.timeout_seconds+10

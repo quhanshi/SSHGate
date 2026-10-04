@@ -98,6 +98,11 @@ body.has-pending .edge-glow{opacity:1;animation:breathe 3.2s ease-in-out infinit
 .hold{position:relative;flex:1;height:32px;border:1px solid #9fd8ff55;background:#9fd8ff0d;color:var(--blue);border-radius:2px;font:500 calc(13px * var(--font-scale)) var(--font);letter-spacing:.08em;overflow:hidden;user-select:none;touch-action:none}
 .write .hold{border-color:#ffb54766;background:#ffb5470d;color:var(--amber)}.destructive .hold{border-color:#ff5c7a77;background:#ff5c7a10;color:var(--red)}
 .hold .fill{position:absolute;inset:0;transform-origin:left;transform:scaleX(var(--p,0));background:currentColor;opacity:.22;pointer-events:none}
+.hold{display:flex;align-items:center;justify-content:center;gap:7px;padding:0 7px}
+.hold .countdown{position:absolute;inset:0;transform-origin:left;transform:scaleX(var(--remaining,1));pointer-events:none;transition:transform .1s linear}
+.hold .countdown::before{content:'';position:absolute;inset:0;background:currentColor;opacity:.09}
+.hold .countdown::after{content:'';position:absolute;left:0;right:0;bottom:0;height:2px;background:currentColor;opacity:.55}
+.hold .countdown-number{font:calc(11px * var(--font-scale)) var(--mono);letter-spacing:0;color:var(--muted);font-variant-numeric:tabular-nums}
 .hold span{position:relative}
 .hold.done{opacity:.6}
 .gi-reject{height:32px;padding:0 10px;border:1px solid var(--line);background:none;border-radius:2px;color:var(--muted);font:calc(13px * var(--font-scale)) var(--font)}
@@ -213,3 +218,5 @@ dialog{color:var(--text);background:#0b1117;border:1px solid #ffffff2b;border-ra
 @media(max-width:1279px){.drawer{width:min(880px,calc(100vw - 55px))}.gate.open{box-shadow:-20px 0 60px #0008}.statusbar{gap:15px}.console .term{max-width:calc(100% - 260px)}}
 @media(max-width:1060px){.statusbar #footer-requests{display:none}.drawer-tabs{gap:0}.request-layout{grid-template-columns:235px minmax(0,1fr);gap:18px}.node .nlat{display:none}.console .term{max-width:calc(100% - 230px)}.linkbar{gap:12px}.new-node{left:65%}.node{font-size:calc(12.5px * var(--font-scale))}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+.authorization-list{display:grid;gap:12px}.authorization-item{padding:12px;border:1px solid var(--line-soft);border-radius:3px}.authorization-item code,.authorization-item p{overflow-wrap:anywhere}.authorization-item p{font-size:calc(12px * var(--font-scale));color:var(--muted);margin:8px 0}.authorization-item small{font-size:calc(11px * var(--font-scale));color:var(--dim)}

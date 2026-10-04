@@ -2,6 +2,7 @@ import type {Snapshot,RequestDetail,RequestSummary,Profiles,Route,Transfer,Sessi
 interface ApiMap {
  snapshot: [[],Snapshot]; request_detail:[[string,number?],RequestDetail]; begin_review:[[string],{ticket:string;request:RequestDetail}]; approve:[[string,string,boolean],null]; reject:[[string],unknown]; terminate_request:[[string],RequestDetail];
  set_readonly:[[boolean],unknown]; save_settings:[[Record<string,unknown>],unknown]; set_mcp_running:[[boolean],unknown];
+ revoke_authorization:[[string],unknown];
  known_hosts:[[],{host:string;port:number}[]]; ssh_profiles:[[string?],Profiles]; preview_connection:[[Record<string,unknown>],Route]; save_connection:[[Record<string,unknown>,boolean],{id:string}]; remove_connection:[[string],unknown]; test_connection:[[string],RequestSummary]; disconnect_connection:[[string?],unknown];
  filesystem:[[string,string,Record<string,unknown>],RequestSummary]; prepare_upload:[[],Transfer|null]; save_download:[[string],string|null]; clear_transfer:[[string],unknown]; choose_file:[[string],string];
  session_action:[[string,Record<string,unknown>],RequestSummary]; session_detail:[[string],Session]; submit_local:[[string,string,string,string,number],RequestSummary];

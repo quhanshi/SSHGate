@@ -114,6 +114,65 @@ def _git(args):
         i+=1
     return True
 
+def scoped_read_paths(command: str) -> list[str]:
+    """Path operands, including paths carried in options; refuse recursive link traversal."""
+    argv = shlex.split(command)
+    name, args = argv[0].rsplit('/', 1)[-1], argv[1:]
+    if name == 'll': name = 'ls'
+    if name == 'find':
+        paths = []; i = 0; expression = False
+        while i < len(args):
+            arg = args[i]
+            if arg == '-P':
+                i += 1; continue
+            if arg in {'-H', '-L'}:
+                raise ValueError('目录授权内不允许 find 跟随符号链接')
+            if arg.startswith('-') or arg == '!': expression = True
+            if not expression: paths.append(arg)
+            if arg == '-newer':
+                i += 1; paths.append(args[i])
+            elif arg in {'-name', '-iname', '-path', '-ipath', '-type', '-maxdepth', '-mindepth',
+                         '-size', '-mtime', '-mmin', '-atime', '-amin', '-ctime', '-cmin',
+                         '-user', '-group', '-uid', '-gid', '-perm'}:
+                i += 1
+            i += 1
+        return paths or ['.']
+    if name not in OPTIONS: return []
+    paths = _options(args, OPTIONS[name])
+    if paths is None: raise ValueError('无法确认只读命令的路径参数')
+    pattern_supplied = False; extra_paths = []; i = 0
+    short, flags, values, value_short = OPTIONS[name]
+    while i < len(args):
+        arg = args[i]
+        if arg == '--': break
+        if arg.startswith('--'):
+            key, sep, value = arg.partition('=')
+            if name == 'du' and key == '--dereference-args' or name == 'grep' and key == '--dereference-recursive':
+                raise ValueError('目录授权内不允许递归跟随符号链接')
+            if key in values:
+                if not sep: i += 1; value = args[i]
+                if name == 'grep' and key in {'--regexp', '--file'}:
+                    pattern_supplied = True
+                    if key == '--file': extra_paths.append(value)
+        elif arg.startswith('-') and arg != '-':
+            chars = arg[1:]; pos = 0
+            while pos < len(chars):
+                char = chars[pos]
+                if name == 'du' and char in 'DHL' or name == 'grep' and char == 'R':
+                    raise ValueError('目录授权内不允许递归跟随符号链接')
+                if char in value_short:
+                    value = chars[pos + 1:]
+                    if not value: i += 1; value = args[i]
+                    if name == 'grep' and char in 'ef':
+                        pattern_supplied = True
+                        if char == 'f': extra_paths.append(value)
+                    break
+                pos += 1
+        i += 1
+    if name == 'grep' and not pattern_supplied: paths = paths[1:]
+    return extra_paths + paths or ['.']
+
+
 def readonly_command(command: str) -> ReadOnlyDecision:
     no=lambda reason: ReadOnlyDecision(False, explanation=reason)
     if any(c in FORBIDDEN for c in command): return no("含 shell 操作符、替换或多行内容，需要人工审批")

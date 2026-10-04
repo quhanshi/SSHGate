@@ -83,6 +83,7 @@ class DesktopAPI:
                     "servers": [{**asdict(s), "connected": states.get(s.id, False),
                                  "last_diagnostics": self._manager.server_info.get(s.id)} for s in config.servers],
                     "requests": self._manager.list_summaries(), "prompt": prompt,
+                    "authorizations": self._manager.list_auto_approvals()["authorizations"],
                     "transfers": self._manager.transfers.list(),
                     "sessions": [{k:v for k,v in s.items() if k!="environment"} | {"environment_keys":list(s["environment"])}
                                  for s in self._manager.sessions.values()],
@@ -107,7 +108,7 @@ class DesktopAPI:
             now = time.monotonic()
             self._reviews = {k: v for k, v in self._reviews.items() if v[2] > now}
             ticket = secrets.token_urlsafe(32)
-            self._reviews[ticket] = (request_id, view["digest"], now + 120)
+            self._reviews[ticket] = (request_id, view["digest"], now + min(60, view["approval_remaining_ms"] / 1000))
             return {"ticket": ticket, "request": view}
         return self._reply(token, begin)
 
@@ -135,6 +136,9 @@ class DesktopAPI:
     def set_readonly(self, token, enabled):
         return self._reply(token, lambda: self._manager.local_set_readonly(enabled))
 
+    def revoke_authorization(self, token, grant_id):
+        return self._reply(token, lambda: self._manager.revoke_auto_approval(grant_id))
+
     def known_hosts(self, token):
         return self._reply(token, lambda: [{"host": host, "port": port or 22} for host, port in known_host_candidates()])
 
@@ -156,7 +160,7 @@ class DesktopAPI:
 
     def save_connection(self, token, values, editing=False):
         def save():
-            allowed = {"id", "label", "ssh_target", "default_cwd", "port", "identity_file", "ssh_config_file", "auto_categories", "auto_roots"}
+            allowed = {"id", "label", "ssh_target", "default_cwd", "port", "identity_file", "ssh_config_file", "auto_categories", "auto_roots", "auto_grant_capabilities", "github_hosts"}
             if not isinstance(values, dict) or set(values) - allowed or type(editing) is not bool:
                 raise ValueError("连接参数无效")
             server = Server(**values)
@@ -289,7 +293,7 @@ class DesktopAPI:
             if "listen_port" in settings and settings["listen_port"] != self._manager.config.listen_port:
                 if self._tunnel.status(self._manager.config)["running"]:
                     raise ValueError("更改 MCP 端口前请先停止隧道")
-                if any(r["status"] in {"running", "pending_approval", "queued_readonly"} for r in self._manager.list_summaries()):
+                if any(r["status"] in {"running", "pending_approval", "queued_readonly", "queued_authorized"} for r in self._manager.list_summaries()):
                     raise ValueError("更改端口前请处理未完成请求")
                 self._manager.local_save_settings(settings)
                 self._host.stop()

@@ -57,6 +57,7 @@ npm run build
 npx playwright install chromium
 npm run test:ui
 npm run test:orbit
+npm run test:authorizations
 ```
 
 Windows EXE：

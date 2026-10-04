@@ -55,7 +55,7 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertIn("No tool can approve", init.instructions)
                             tools = await session.list_tools()
                             names = {tool.name for tool in tools.tools}
-                            self.assertEqual({"list_servers", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
+                            self.assertEqual({"list_servers", "request_auto_approval", "get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
                             servers = await session.call_tool("list_servers", {})
                             self.assertFalse(servers.isError)
                             self.assertTrue(servers.structuredContent["approval_required_for_all_commands"])
@@ -78,12 +78,44 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertEqual("succeeded", done.structuredContent["status"])
                             self.assertEqual("/home/test\n", done.structuredContent["stdout"])
                             self.assertEqual(["pwd"], calls)
+                            annotations = {tool.name: tool.annotations for tool in tools.tools}
+                            self.assertFalse(annotations['request_auto_approval'].readOnlyHint)
+                            self.assertFalse(annotations['request_auto_approval'].destructiveHint)
+                            self.assertTrue(annotations['revoke_auto_approval'].destructiveHint)
+                            manager.local_gui_heartbeat()
+                            application = await session.call_tool('request_auto_approval', {
+                                'server_id': 'server', 'repo_path': '/srv/project',
+                                'capabilities': ['exact_commands'], 'exact_commands': ['printf hello'],
+                                'reason': 'Run a fixed check', 'client_request_id': 'http-grant', 'max_uses': 1})
+                            self.assertFalse(application.isError)
+                            self.assertEqual('pending_approval', application.structuredContent['status'])
+                            proposal_id = application.structuredContent['request_id']
+                            manager.local_approve(proposal_id, manager.get(proposal_id)['digest'])
+                            granted = await session.call_tool('get_auto_approval_status', {'request_id': proposal_id})
+                            self.assertEqual('granted', granted.structuredContent['status'])
+                            grant_id = granted.structuredContent['authorization']['grant_id']
+                            authorized_args = {'server_id': 'server', 'command': 'printf hello',
+                                'cwd': '/srv/project', 'reason': 'Run fixed check',
+                                'client_request_id': 'http-authorized', 'grant_id': grant_id}
+                            authorized = await session.call_tool('request_command', authorized_args)
+                            self.assertFalse(authorized.isError)
+                            authorized_done = await session.call_tool('get_command_status', {
+                                'request_id': authorized.structuredContent['request_id'], 'wait_seconds': 2})
+                            self.assertEqual('succeeded', authorized_done.structuredContent['status'])
+                            self.assertEqual('temporary_grant', authorized_done.structuredContent['approval_kind'])
+                            retried = await session.call_tool('request_command', authorized_args)
+                            self.assertEqual(authorized.structuredContent['request_id'], retried.structuredContent['request_id'])
+                            exhausted = await session.call_tool('request_command', {**authorized_args, 'client_request_id': 'http-exhausted'})
+                            self.assertTrue(exhausted.isError)
+                            revoked = await session.call_tool('revoke_auto_approval', {'grant_id': grant_id})
+                            self.assertEqual('revoked', revoked.structuredContent['status'])
+                            self.assertEqual(['pwd', 'printf hello'], calls)
                             manager.local_gui_heartbeat()
                             denied = await session.call_tool("request_command", {**args, "client_request_id": "http-denied"})
                             manager.reject(denied.structuredContent["request_id"])
                             result = await session.call_tool("get_command_status", {"request_id": denied.structuredContent["request_id"]})
                             self.assertEqual("denied", result.structuredContent["status"])
-                            self.assertEqual(["pwd"], calls)
+                            self.assertEqual(["pwd", "printf hello"], calls)
                     async with httpx.AsyncClient(trust_env=False) as client:
                         health = await client.get(url + "/healthz")
                         self.assertEqual("ssh-gate", health.json()["service"])

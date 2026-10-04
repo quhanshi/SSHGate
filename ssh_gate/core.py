@@ -24,6 +24,7 @@ from .transfers import TransferStore, safe_name, zip_members
 from .ssh import SSHRunner, SSHSettings, build_remote_command, resolve_settings
 from .credentials import CredentialStore
 from .ssh_trace import MAX_CONNECTION_EVENTS
+from .authorizations import Grant, CAPABILITY_LABELS, grant_arguments, preauthorized
 
 
 def timestamp() -> str:
@@ -50,6 +51,8 @@ class Payload:
     policy_category: str = ""
     policy_roots: tuple[str, ...] = ()
     session_id: str = ""
+    grant_id: str = ""
+    github_hosts: tuple[str, ...] = ()
 
     def digest(self) -> str:
         raw = json.dumps(asdict(self), ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -110,13 +113,18 @@ class ApprovalManager:
         self.sessions: dict[str, dict] = {}
         self.server_info: dict[str, dict] = {}
         self._job_secret = secrets.token_bytes(32)
+        self.grants: dict[str, Grant] = {}
         if isinstance(self.runner, SSHRunner):
             self.runner.transfers = self.transfers
+            self.runner.execution_authorizer = self.check_execution_authorization
 
     def local_set_readonly(self, enabled: bool) -> None:
         with self._lock:
             updated = write_config(self.config, auto_allow_readonly=enabled)
             self.config = updated
+            if not enabled:
+                for grant in self.grants.values():
+                    grant.revoked = True
             if not enabled:
                 for request in self._requests.values():
                     if request.status == "queued_readonly":
@@ -133,6 +141,7 @@ class ApprovalManager:
         with self._lock:
             self._ensure_server_idle(server.id)
             self.config = write_config(self.config, server=server, replace_server=True)
+            self._revoke_server_grants(server.id)
             if hasattr(self.runner, "close_connection"):
                 self.runner.close_connection(server.id)
 
@@ -140,11 +149,12 @@ class ApprovalManager:
         with self._lock:
             self._ensure_server_idle(server_id)
             self.config = write_config(self.config, remove_server_id=server_id)
+            self._revoke_server_grants(server_id)
             if hasattr(self.runner, "close_connection"):
                 self.runner.close_connection(server_id)
 
     def _ensure_server_idle(self, server_id: str) -> None:
-        if any(r.payload.server_id == server_id and r.status in {"running", "pending_approval", "queued_readonly"}
+        if any(r.payload.server_id == server_id and r.status in {"running", "pending_approval", "queued_readonly", "queued_authorized"}
                for r in self._requests.values()):
             raise ValueError("此连接还有未完成请求，请先完成、撤回或断开请求")
         if any(s["server_id"] == server_id for s in self.sessions.values()):
@@ -177,7 +187,7 @@ class ApprovalManager:
 
     def _expire(self) -> None:
         for request in self._requests.values():
-            if request.status in {"pending_approval", "queued_readonly"} and self.clock() >= request.expires_monotonic:
+            if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} and self.clock() >= request.expires_monotonic:
                 request.status = "expired"
                 request.finished_at = timestamp()
                 request.phase = "finished"
@@ -193,7 +203,8 @@ class ApprovalManager:
         return self._requests[request_id]
 
     def submit(self, server_id: str, command: str, reason: str, client_request_id: str,
-               cwd: str = "", timeout_seconds: int = 300, *, session_id: str = "", session_revision: int = 0) -> dict:
+               cwd: str = "", timeout_seconds: int = 300, *, session_id: str = "", session_revision: int = 0,
+               grant_id: str = "") -> dict:
         server = self.config.server(server_id)
         command = checked_text(command.replace("\r\n", "\n"), "命令", multiline=True)
         reason = checked_text(reason, "执行目的", multiline=True)
@@ -212,9 +223,16 @@ class ApprovalManager:
         eligible = decision.allowed and (not server.auto_categories or category in server.auto_categories)
         if category == "python_tests" and not server.auto_categories:
             eligible = False
-        roots = server.auto_roots if server.auto_categories and eligible else ()
+        roots = server.auto_roots if eligible else ()
         if roots and not scope_contains(cwd, roots): eligible = False
         if not eligible: roots = ()
+        if grant_id:
+            with self._lock:
+                grant = self._checked_grant(grant_id, server_id, allow_retry=client_request_id)
+                decision = grant.command_decision(command, cwd, timeout_seconds)
+                category = decision.category
+                roots = (grant.arguments["repo_path"],)
+                eligible = False
         executed = decision.executable_command if decision.allowed else command
         token = hashlib.sha256(self._job_secret + client_request_id.encode()).hexdigest()[:32]
         remote = build_remote_command(executed, cwd, timeout_seconds, token)
@@ -222,7 +240,8 @@ class ApprovalManager:
                           timeout_seconds, remote, resolve_settings(self.config, server),
                           executed, eligible, decision.explanation,
                           arguments=json.dumps({"session_revision":session_revision}) if session_id else "{}", job_token=token,
-                          policy_category=category, policy_roots=tuple(roots),session_id=session_id)
+                          policy_category=category, policy_roots=tuple(roots),session_id=session_id,
+                          grant_id=grant_id, github_hosts=server.github_hosts)
         return self._admit(payload, client_request_id)
 
     def _admit(self, payload: Payload, client_request_id: str) -> dict:
@@ -237,12 +256,14 @@ class ApprovalManager:
                 if previous.payload != payload:
                     raise ValueError("相同 client_request_id 不可替换命令、目标或执行参数")
                 return self._view(previous)
-            if sum(r.status in {"pending_approval", "queued_readonly"} for r in self._requests.values()) >= 20:
+            if sum(r.status in {"pending_approval", "queued_readonly", "queued_authorized"} for r in self._requests.values()) >= 20:
                 raise ValueError("已有 20 条待审批请求，请先处理")
             if len(self._requests) >= 200:
                 raise ValueError("本次会话已达 200 条请求上限；处理完后重启后端")
             request = Request(str(uuid.uuid4()), client_request_id, payload, timestamp(),
-                              self.clock() + self.config.approval_timeout_seconds)
+                              self.clock() + min(60, self.config.approval_timeout_seconds))
+            if payload.grant_id:
+                request.status = "queued_authorized"
             if self.config.auto_allow_readonly and payload.readonly_eligible:
                 request.status = "queued_readonly"
             self._audit("submitted", request)  # Fail closed if audit cannot be written.
@@ -251,10 +272,103 @@ class ApprovalManager:
             self._start_readonly_queue()
             return self._view(request)
 
+    def _server_binding(self, server_id: str) -> str:
+        server = self.config.server(server_id)
+        raw = json.dumps({"server": asdict(server), "ssh": asdict(resolve_settings(self.config, server))},
+                         sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _revoke_server_grants(self, server_id: str) -> None:
+        for grant in self.grants.values():
+            if grant.server_id == server_id:
+                grant.revoked = True
+
+    def _checked_grant(self, grant_id: str, server_id: str, *, allow_retry: str = "") -> Grant:
+        grant = self.grants.get(grant_id)
+        if not grant or grant.server_id != server_id or grant.server_binding != self._server_binding(server_id):
+            raise ValueError("授权不存在、目标不匹配或服务器配置已变化")
+        previous = self._requests.get(self._client_ids.get(allow_retry, "")) if allow_retry else None
+        identical_retry = previous is not None and previous.payload.grant_id == grant_id
+        if not identical_retry and not grant.available(self.clock()):
+            raise ValueError("授权已撤销、过期或次数已用完")
+        return grant
+
+    def request_auto_approval(self, server_id, repo_path, capabilities, reason, client_request_id,
+                              ttl_seconds=1800, max_uses=50, exact_commands=None,
+                              max_timeout_seconds=300, git_remote="origin", git_branch="main") -> dict:
+        server = self.config.server(server_id)
+        arguments = grant_arguments(repo_path, capabilities, exact_commands or [], ttl_seconds,
+                                    max_uses, max_timeout_seconds, git_remote, git_branch)
+        integer(max_timeout_seconds, 1, self.config.max_command_timeout_seconds, "单次执行时限")
+        reason = checked_text(reason, "申请目的", multiline=True)
+        if len(reason) > 2000 or not isinstance(client_request_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", client_request_id):
+            raise ValueError("申请目的或 client_request_id 无效")
+        labels = "、".join(CAPABILITY_LABELS[c] for c in arguments["capabilities"])
+        command = f"临时授权：{labels}\n目录：{arguments['repo_path']}\n期限：{ttl_seconds}s · 最多 {max_uses} 次 · 单次 {max_timeout_seconds}s"
+        if set(capabilities) & {"git_deploy_pull", "git_full"}:
+            command += f"\nGit：{git_remote} / {git_branch}；GitHub 仅拉取部署"
+        if arguments["exact_commands"]:
+            command += "\n固定命令：\n" + "\n".join(arguments["exact_commands"])
+        arguments["server_binding"] = self._server_binding(server_id)
+        payload = Payload(server.id, server.label, server.ssh_target, command, arguments["repo_path"],
+                          reason, max_timeout_seconds, "本地临时授权，不执行远端命令", resolve_settings(self.config, server),
+                          readonly_eligible=preauthorized(server, self.config, arguments),
+                          readonly_explanation="批准后匹配范围的命令免逐条审批；项目代码执行不构成系统沙箱",
+                          operation="request_auto_approval", arguments=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+                          policy_category="authorization", github_hosts=server.github_hosts)
+        return self._authorization_view(self._admit(payload, client_request_id)["request_id"])
+
+    def _authorization_view(self, request_id: str) -> dict:
+        view = self.get(request_id, limit=1)
+        if view["operation"] != "request_auto_approval":
+            raise ValueError("此请求不是授权申请")
+        grant_id = view["result"].get("grant_id")
+        grant = self.grants.get(grant_id)
+        return {"request_id": request_id, "status": grant.view(self.clock())["status"] if grant else view["status"],
+                "authorization": grant.view(self.clock()) if grant else None,
+                "approval_expires_in_seconds": view["approval_expires_in_seconds"], "error": view["error"]}
+
+    def get_auto_approval_status(self, request_id: str) -> dict:
+        with self._lock:
+            return self._authorization_view(request_id)
+
+    def list_auto_approvals(self) -> dict:
+        with self._lock:
+            return {"authorizations": [g.view(self.clock()) for g in self.grants.values()]}
+
+    def revoke_auto_approval(self, grant_id: str) -> dict:
+        with self._lock:
+            grant = self.grants.get(grant_id)
+            if not grant:
+                raise ValueError("授权不存在或后端已重启")
+            grant.revoked = True
+            self._audit("authorization_revoked", self._find(grant.request_id))
+            for request in self._requests.values():
+                if request.payload.grant_id == grant_id and request.status == "queued_authorized":
+                    request.status = "denied"
+                    request.error = "临时授权已撤销；请重新提交审批"
+                    request.finished_at = timestamp()
+                    request.phase = "finished"
+                    self._audit("authorization_invalidated", request)
+            return grant.view(self.clock())
+
+    def check_execution_authorization(self, payload: Payload) -> None:
+        """Called again after SSH preflight, immediately before executing the actual operation."""
+        if not payload.grant_id:
+            return
+        with self._lock:
+            grant = self.grants.get(payload.grant_id)
+            if (not grant or grant.revoked or self.clock() >= grant.expires_monotonic or
+                    grant.server_binding != self._server_binding(payload.server_id)):
+                raise ValueError("执行前授权已失效，未执行远端命令")
+            decision = grant.command_decision(payload.command, payload.cwd, payload.timeout_seconds)
+            if decision.executable_command != payload.executed_command:
+                raise ValueError("执行命令与授权不匹配")
+
     def submit_operation(self, server_id: str, operation: str, arguments: dict, reason: str,
                          client_request_id: str, timeout_seconds: int = 300) -> dict:
         server = self.config.server(server_id)
-        allowed = {"list_directory", "read_file", "stat_path", "find_files", "test_connection",
+        allowed = {"list_directory", "read_file", "stat_path", "find_files", "test_connection", "inspect_repository",
                    "download_file", "download_directory", "upload_file", "upload_directory",
                    "create_session", "update_session"}
         if operation not in allowed or not isinstance(arguments, dict): raise ValueError("操作类型无效")
@@ -266,7 +380,7 @@ class ApprovalManager:
         permitted = {
             "list_directory": {"path", "offset", "limit"}, "stat_path": {"path"},
             "read_file": {"path", "offset", "limit"}, "find_files": {"path", "pattern", "max_depth", "limit"},
-            "test_connection": {"path"}, "download_file": {"path"}, "download_directory": {"path"},
+            "test_connection": {"path"}, "inspect_repository": {"path"}, "download_file": {"path"}, "download_directory": {"path"},
             "upload_file": {"path", "transfer_id", "overwrite"}, "upload_directory": {"path", "transfer_id"},
             "create_session": {"path", "session_id", "environment"},
             "update_session": {"path", "session_id", "environment", "expected_revision"}}
@@ -283,10 +397,10 @@ class ApprovalManager:
         path=checked_text(args.get("path",server.default_cwd),"远程路径")
         if len(path)>4096: raise ValueError("路径过长")
         args["path"]=path
-        category="diagnostics" if operation=="test_connection" else "read_fs"
+        category="diagnostics" if operation=="test_connection" else "git_read" if operation=="inspect_repository" else "read_fs"
         eligible=operation not in {"upload_file","upload_directory","create_session","update_session"}
         eligible=eligible and (not server.auto_categories or category in server.auto_categories)
-        roots=server.auto_roots if eligible and server.auto_categories else ()
+        roots=server.auto_roots if eligible else ()
         # Bound filesystem reads by the actual normalized target at execution.
         if roots and not scope_contains(path,roots): eligible=False
         if not eligible: roots=()
@@ -314,7 +428,7 @@ class ApprovalManager:
                             server.default_cwd,reason,timeout_seconds,"SFTP / "+operation,
                             resolve_settings(self.config,server),operation,eligible,
                             "结构化 SFTP 操作；上传/会话上下文变更需本地审批",operation,raw,
-                            policy_category=category,policy_roots=tuple(roots))
+                            policy_category=category,policy_roots=tuple(roots),github_hosts=server.github_hosts)
             try: return self._admit(payload,client_request_id)
             except BaseException:
                 if leased: self.transfers.release(tid)
@@ -347,13 +461,15 @@ class ApprovalManager:
             "path":cwd or session["cwd"],"session_id":session_id,
             "environment":self._environment(environment),"expected_revision":session["revision"]},reason,client_request_id)
 
-    def exec_in_session(self, session_id, command, reason, client_request_id, timeout_seconds=300):
+    def exec_in_session(self, session_id, command, reason, client_request_id, timeout_seconds=300, grant_id=""):
         with self._lock:
             session=self.session_context(session_id)
             environment=session["environment"]
+            if grant_id and environment:
+                raise ValueError("含自定义环境变量的会话命令需要逐次审批，不适用临时授权")
             script="".join("export "+k+"="+shlex.quote(v)+"\n" for k,v in sorted(environment.items()))+command
             # All exports are literal and part of the reviewed digest. A shell process is never reused.
-            view=self.submit(session["server_id"],script,reason,client_request_id,session["cwd"],timeout_seconds,session_id=session_id,session_revision=session["revision"])
+            view=self.submit(session["server_id"],script,reason,client_request_id,session["cwd"],timeout_seconds,session_id=session_id,session_revision=session["revision"],grant_id=grant_id)
             return {**view,"session_id":session_id,"session_revision":session["revision"]}
 
     def close_session(self, session_id):
@@ -380,7 +496,10 @@ class ApprovalManager:
             "approval_kind": request.approval_kind,
             "finished_at": request.finished_at, "exit_code": request.exit_code, "error": request.error,
             "approval_expires_in_seconds": max(0, int(request.expires_monotonic - self.clock()))
-            if request.status in {"pending_approval", "queued_readonly"} else 0,
+            if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
+            "approval_remaining_ms": max(0, int((request.expires_monotonic - self.clock()) * 1000))
+            if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
+            "approval_timeout_seconds": min(60, self.config.approval_timeout_seconds),
             "stdout": stdout[offset:offset + limit], "stderr": stderr[offset:offset + limit],
             "output_offset": offset, "next_output_offset": offset + limit,
             "stdout_length": len(stdout), "stderr_length": len(stderr),
@@ -416,7 +535,7 @@ class ApprovalManager:
         # Do not publish a replacement character for an incomplete UTF-8 tail:
         # independent character cursors remain stable as the next bytes arrive.
         decoder=codecs.getincrementaldecoder("utf-8")(errors="replace")
-        return decoder.decode(bytes(raw),final=status not in {"running","queued_readonly","pending_approval"})
+        return decoder.decode(bytes(raw),final=status not in {"running","queued_readonly","queued_authorized","pending_approval"})
 
     def list_local(self) -> list[dict]:
         with self._lock:
@@ -439,8 +558,12 @@ class ApprovalManager:
                      "pid":r.pid,"pgid":r.pgid,"progress_bytes":r.progress_bytes,
                      "runtime_seconds": round((r.ended_monotonic or self.clock())-r.started_monotonic,1) if r.started_monotonic is not None else 0,
                      "termination_requested":r.termination_requested,
+                     "grant_id":r.payload.grant_id,
+                     "approval_remaining_ms": max(0, int((r.expires_monotonic - self.clock()) * 1000))
+                     if r.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
+                     "approval_timeout_seconds": min(60, self.config.approval_timeout_seconds),
                      "approval_expires_in_seconds": max(0, int(r.expires_monotonic - self.clock()))
-                     if r.status in {"pending_approval", "queued_readonly"} else 0}
+                     if r.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0}
                     for r in reversed(list(self._requests.values()))]
 
     def local_approve(self, request_id: str, expected_digest: str) -> None:
@@ -453,17 +576,44 @@ class ApprovalManager:
                 raise ValueError("该请求已被处理或过期；不能重复批准")
             if request.payload.digest() != expected_digest:
                 raise ValueError("命令摘要不匹配；未执行")
-            if any(r.status == "running" for r in self._requests.values()):
+            if request.payload.operation != "request_auto_approval" and any(r.status == "running" for r in self._requests.values()):
                 raise ValueError("已有命令正在运行；请完成后再批准下一条")
             self._start(request, "local")
 
     def _start(self, request: Request, kind: str) -> None:
+        if request.payload.operation == "request_auto_approval":
+            arguments = json.loads(request.payload.arguments)
+            if arguments["server_binding"] != self._server_binding(request.payload.server_id):
+                raise ValueError("服务器配置已变化，请重新申请授权")
+            grant = Grant(uuid.uuid4().hex, request.id, request.payload.server_id,
+                          arguments.pop("server_binding"), arguments, self.clock() + arguments["ttl_seconds"])
+            request.approval_kind = "local" if kind == "local" else "local_policy"
+            try:
+                self._audit("authorization_granted", request)
+            except OSError:
+                request.approval_kind = "none"
+                raise
+            self.grants[grant.id] = grant
+            request.result = {"grant_id": grant.id, "authorization": grant.view(self.clock())}
+            request.status = "succeeded"
+            request.approved_at = request.finished_at = timestamp()
+            request.phase = "finished"
+            request.exit_code = 0
+            return
+        grant = None
+        if kind == "temporary_grant":
+            grant = self._checked_grant(request.payload.grant_id, request.payload.server_id)
+            decision = grant.command_decision(request.payload.command, request.payload.cwd, request.payload.timeout_seconds)
+            if decision.executable_command != request.payload.executed_command:
+                raise ValueError("命令与临时授权不匹配")
         request.approval_kind = kind
         try:
             self._audit("auto_readonly_granted" if kind == "auto_readonly" else "approval_granted", request)
         except OSError:
             request.approval_kind = "none"
             raise
+        if grant:
+            grant.uses += 1
         request.status = "running"
         request.approved_at = timestamp()
         request.started_monotonic = self.clock()
@@ -479,13 +629,27 @@ class ApprovalManager:
             raise
 
     def _start_readonly_queue(self) -> None:
-        if (self._closed or not self.config.auto_allow_readonly or not self._approval_available
+        if (self._closed or not self._approval_available
                 or self.clock() - self._approval_heartbeat > 5
                 or any(r.status == "running" for r in self._requests.values())):
             return
         self._expire()
         for request in self._requests.values():
+            if request.status == "queued_authorized":
+                try:
+                    self._start(request, "temporary_grant")
+                except ValueError as exc:
+                    request.status = "denied"
+                    request.error = str(exc)
+                    request.finished_at = timestamp()
+                    request.phase = "finished"
+                    self._audit("authorization_invalidated", request)
+                    continue
+                break
             if request.status == "queued_readonly":
+                if not self.config.auto_allow_readonly:
+                    request.status = "pending_approval"
+                    continue
                 # Recheck the bounded grammar before admission, never rely only on a stored flag.
                 if not request.payload.readonly_eligible:
                     request.status = "pending_approval"
@@ -496,14 +660,19 @@ class ApprovalManager:
                     if not decision.allowed or decision.executable_command != request.payload.executed_command:
                         request.status = "pending_approval"
                         continue
+                if request.payload.operation == "request_auto_approval" and not preauthorized(
+                        self.config.server(request.payload.server_id), self.config, json.loads(request.payload.arguments)):
+                    request.status = "pending_approval"
+                    continue
                 self._start(request, "auto_readonly")
-                break
+                if request.status == "running":
+                    break
 
     def reject(self, request_id: str) -> dict:
         with self._lock:
             self._expire()
             request = self._find(request_id)
-            if request.status not in {"pending_approval", "queued_readonly"}:
+            if request.status not in {"pending_approval", "queued_readonly", "queued_authorized"}:
                 raise ValueError("只能拒绝/撤回待审批请求")
             request.status = "denied"
             request.finished_at = timestamp()
@@ -525,7 +694,7 @@ class ApprovalManager:
     def terminate(self, request_id: str) -> dict:
         with self._lock:
             request=self._find(request_id)
-            if request.status in {"pending_approval","queued_readonly"}: return self.reject(request_id)
+            if request.status in {"pending_approval","queued_readonly","queued_authorized"}: return self.reject(request_id)
             if request.status != "running": return self._view(request)
             if not request.termination_requested:
                 request.termination_requested=True
@@ -578,6 +747,7 @@ class ApprovalManager:
                 for key in ("pid","pgid","progress_bytes","total_bytes"):
                     if key in values: setattr(request,key,values[key])
         try:
+            self.check_execution_authorization(request.payload)
             if hasattr(self.runner,"execute"):
                 result = self.runner.execute(request.payload,emit,request.stop,progress)
             else:
@@ -630,8 +800,10 @@ class ApprovalManager:
         with self._lock:
             self._closed = True
             self._approval_available = False
+            for grant in self.grants.values():
+                grant.revoked = True
             for request in self._requests.values():
-                if request.status in {"pending_approval", "queued_readonly"}:
+                if request.status in {"pending_approval", "queued_readonly", "queued_authorized"}:
                     request.status = "denied"
                     request.finished_at = timestamp()
                     self._release_transfer(request)

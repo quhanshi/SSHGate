@@ -209,7 +209,7 @@ def main():
         root = Path(directory)
         (root / '.ssh').mkdir()
         (root / '.ssh/config').write_text('Host 181\n HostName jump.fixture\n Port 2201\n User jumper\nHost 10.208.88.201\n HostName 10.208.88.201\n Port 12138\n User quhanshi\n IdentityFile ~/.ssh/id_ed25519\n IdentitiesOnly yes\n ProxyJump 181\nHost 10.208.88.201-Direct\n HostName 10.208.88.201\n Port 12138\n User quhanshi\n')
-        api, manager, _runner, host, _tunnel = make_fixture(root, seed=True)
+        api, manager, _runner, host, _tunnel = make_fixture(root, seed='empty' not in sys.argv[2:])
         html_path = Path(sys.argv[1])
         html_path.write_text(frontend_html(resources, api._token), encoding="utf-8")
         print(json.dumps({"ready": True, "html": str(html_path), "root": str(root)}), flush=True)
@@ -223,6 +223,18 @@ def main():
                         host.received += 1
                         host.answered += 1
                         print(json.dumps({"id": request["id"], "result": {"ok": True}}), flush=True)
+                        continue
+                    if method == 'fixture_request_authorization':
+                        result = manager.request_auto_approval('dev', '/home/fixture/workspace',
+                            ['exact_commands'], '运行项目固定检查', request.get('args', ['ui-grant'])[0],
+                            exact_commands=['printf fixture-check'], ttl_seconds=120, max_uses=3)
+                        print(json.dumps({'id': request['id'], 'result': result}, ensure_ascii=False), flush=True)
+                        continue
+                    if method == 'fixture_expire_request':
+                        request_id, remaining = request['args']
+                        with manager._lock:
+                            manager._find(request_id).expires_monotonic = manager.clock() + remaining
+                        print(json.dumps({'id': request['id'], 'result': {'ok': True}}), flush=True)
                         continue
                     if method.startswith("_") or not callable(getattr(api, method, None)):
                         raise ValueError("fixture method rejected")

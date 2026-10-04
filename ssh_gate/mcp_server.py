@@ -13,12 +13,24 @@ from .core import ApprovalManager
 from .readonly import BINARIES
 
 INSTRUCTIONS = """SSH Gate local SSH access connector. Call list_servers first.
+For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
+It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status;
+pass the returned grant_id to request_command. GitHub repositories are deployment copies on servers:
+use GitHub tools for repository development; SSH Gate allows inspection and deployment pulls only.
+For other verified Git remotes use the locally approved Git workflow. Unknown/mixed remotes need verification.
 Passwords, private-key passphrases and host-key confirmations are handled only in the Windows WebView.
 Use structured SFTP tools for directory listing, bounded file search, stat and segmented reads.
 All long operations return a request_id: poll get_command_status or read_command_output.
 The local read-only switch and per-server category/directory policy control automatic admission.
 Uploads, session environment changes and unrecognized commands require one local approval.
-No tool can approve requests or change the local policy. Reuse client_request_id ONLY for identical retries.
+No tool can approve requests or change permanent local policy. Requesting a grant is not self-approval.
+Grants expire, have use limits, can be revoked, and belong to the current SSH Gate process, not a claimed chat ID.
+exact_commands are complete single literal commands, without shell wrappers or inline programs. Project
+tests/build tools execute trusted code and are not OS sandboxes. Arbitrary scripts require per-call approval.
+For Git call inspect_repository first when the remote/provider is not known. Use cwd, never git -C/global
+config overrides. GitHub deployment uses git fetch REMOTE or git pull --ff-only REMOTE BRANCH; it never
+auto-stashes, merges divergent history, resets or pushes. Tool failures do not authorize switching Git workflows.
+Reuse client_request_id ONLY for identical retries.
 Use terminate_command to stop a running request. It requests TERM then KILL of the owned remote
 process group and reports confirmation in termination.remote_group_terminated; escaped sessions,
 daemons and Docker daemon jobs are outside that guarantee. Cancelling an approval is a separate operation.
@@ -56,15 +68,44 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         states=manager.runner.connection_states() if hasattr(manager.runner,'connection_states') else {}
         return {'servers':[{'id':s.id,'label':s.label,'ssh_target':s.ssh_target,'default_cwd':s.default_cwd,
                             'connected':states.get(s.id,False),'last_diagnostics':manager.server_info.get(s.id),
-                            'auto_categories':s.auto_categories,'auto_roots':s.auto_roots} for s in manager.config.servers],
+                            'auto_categories':s.auto_categories,'auto_roots':s.auto_roots,
+                            'auto_grant_capabilities':s.auto_grant_capabilities,'github_hosts':s.github_hosts} for s in manager.config.servers],
                 'auto_allow_readonly':manager.config.auto_allow_readonly,
                 'approval_required_for_all_commands':not manager.config.auto_allow_readonly,
                 'auto_readonly_tools':['ll',*BINARIES], 'approval_location':'Windows 本地审批窗口'}
 
     @mcp.tool(annotations=write)
-    def request_command(server_id:str,command:str,reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300) -> dict[str,Any]:
-        """Submit a literal command. Unknown switches/scripts wait for Windows approval. Retries reuse identical arguments and client_request_id."""
-        return manager.submit(server_id,command,reason,client_request_id,cwd,timeout_seconds)
+    def request_command(server_id:str,command:str,reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
+        """Submit a literal command with an optional temporary grant_id. The server checks target, directory, parameters, time and uses. Unrecognized commands/scripts require local approval. GitHub copies only support deployment pulls/inspection; retries must be identical."""
+        return manager.submit(server_id,command,reason,client_request_id,cwd,timeout_seconds,grant_id=grant_id)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
+    def request_auto_approval(server_id:str,repo_path:str,capabilities:list[str],reason:str,client_request_id:str,
+                              ttl_seconds:int=1800,max_uses:int=50,exact_commands:list[str]|None=None,
+                              max_timeout_seconds:int=300,git_remote:str='origin',git_branch:str='main') -> dict[str,Any]:
+        """Request a temporary bounded grant, never approve yourself. Capabilities: read_fs, diagnostics, git_read, docker_read, python_tests, git_deploy_pull, git_full (verified non-GitHub only), exact_commands. Fixed commands are single literal commands. Local policy may preauthorize; otherwise one Windows approval is needed within 60 seconds. TTL <=3600s, uses <=100. Return request_id; poll get_auto_approval_status to obtain grant_id. Grants do not change ChatGPT confirmation settings."""
+        return manager.request_auto_approval(server_id,repo_path,capabilities,reason,client_request_id,ttl_seconds,
+                                              max_uses,exact_commands,max_timeout_seconds,git_remote,git_branch)
+
+    @mcp.tool(annotations=read)
+    def get_auto_approval_status(request_id:str) -> dict[str,Any]:
+        """Read a grant application's pending/granted/denied/expired/revoked/exhausted state and effective bounds."""
+        return manager.get_auto_approval_status(request_id)
+
+    @mcp.tool(annotations=read)
+    def list_auto_approvals() -> dict[str,Any]:
+        """List temporary grant scopes, remaining uses and expiry in this SSH Gate process."""
+        return manager.list_auto_approvals()
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=True,idempotentHint=True,openWorldHint=False))
+    def revoke_auto_approval(grant_id:str) -> dict[str,Any]:
+        """Revoke a temporary grant. Queued work loses authority; already executing work uses terminate_command separately."""
+        return manager.revoke_auto_approval(grant_id)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
+    def inspect_repository(server_id:str,repo_path:str,client_request_id:str) -> dict[str,Any]:
+        """Request bounded inspection of the repository root and effective fetch/push remote providers. Git URL rewrites and simple SSH aliases are resolved; credentials/URLs are omitted. Poll request_id for result."""
+        return manager.submit_operation(server_id,'inspect_repository',{'path':repo_path},'核对 Git 仓库与实际远端',client_request_id,timeout_seconds=60)
 
     @mcp.tool(annotations=read)
     async def get_command_status(request_id:str,output_offset:int=0,output_limit:int=16384,wait_seconds:int=0) -> dict[str,Any]:
@@ -73,7 +114,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         deadline=asyncio.get_running_loop().time()+wait_seconds
         while True:
             view=manager.get(request_id,output_offset,output_limit)
-            if view['status'] not in {'pending_approval','queued_readonly','running'} or asyncio.get_running_loop().time()>=deadline: return view
+            if view['status'] not in {'pending_approval','queued_readonly','queued_authorized','running'} or asyncio.get_running_loop().time()>=deadline: return view
             await asyncio.sleep(.2)
 
     @mcp.tool(annotations=read)
@@ -84,7 +125,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         initial=manager.get(request_id,limit=1)['phase']
         while True:
             view=manager.read_output(request_id,stdout_cursor,stderr_cursor,output_limit)
-            if (view['stdout'] or view['stderr'] or view['phase']!=initial or view['status'] not in {'pending_approval','queued_readonly','running'} or asyncio.get_running_loop().time()>=deadline): return view
+            if (view['stdout'] or view['stderr'] or view['phase']!=initial or view['status'] not in {'pending_approval','queued_readonly','queued_authorized','running'} or asyncio.get_running_loop().time()>=deadline): return view
             await asyncio.sleep(.2)
 
     @mcp.tool(annotations=local)
@@ -168,9 +209,9 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         return manager.update_session(session_id,cwd,environment,reason,client_request_id)
 
     @mcp.tool(annotations=write)
-    def exec_in_session(session_id:str,command:str,reason:str,client_request_id:str,timeout_seconds:int=300) -> dict[str,Any]:
+    def exec_in_session(session_id:str,command:str,reason:str,client_request_id:str,timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
         """Submit a command with the session's current context frozen into its approval digest. cd/export changes within the command do not persist."""
-        return manager.exec_in_session(session_id,command,reason,client_request_id,timeout_seconds)
+        return manager.exec_in_session(session_id,command,reason,client_request_id,timeout_seconds,grant_id)
 
     @mcp.tool(annotations=read)
     def list_sessions() -> dict[str,Any]:

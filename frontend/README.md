@@ -129,6 +129,7 @@ npm test
 npx playwright install chromium
 npm run test:ui
 npm run test:orbit
+npm run test:authorizations
 ```
 
 测试使用正式编译资源和受控 DesktopAPI/ApprovalManager fixture，不连接用户真实服务器或真实 OpenAI 账号。

@@ -21,12 +21,14 @@ SSH Gate 由四层组成：
 | `ssh_gate/ssh_trace.py` | 真实 SSH 协议事件观测与安全字段过滤 |
 | `ssh_gate/readonly.py` | 只读命令解析与类别识别 |
 | `ssh_gate/policies.py` | 服务器类别、目录范围和 pytest 特殊授权 |
+| `ssh_gate/authorizations.py` | 临时授权、能力与固定命令规则、期限和使用次数 |
+| `ssh_gate/git_policy.py` | 生效远端核验、GitHub 部署与其他远端 Git 工作流 |
 | `ssh_gate/transfers.py` | 本地上传/下载缓存、SHA256、配额与恢复 |
 | `ssh_gate/credentials.py` | 本机加密凭据存储 |
 | `ssh_gate/proxy.py` | Tunnel 出站代理发现、验证和环境构造 |
 | `ssh_gate/runtime.py` | MCP 与 Tunnel 客户端生命周期 |
 | `ssh_gate/desktop.py` | WebView 本地桥接与 UI 快照 |
-| `ssh_gate/mcp_server.py` | 23 个 MCP 工具和本地 HTTP MCP 服务 |
+| `ssh_gate/mcp_server.py` | 28 个 MCP 工具和本地 HTTP MCP 服务 |
 
 ## 2. 进程与网络
 
@@ -51,15 +53,15 @@ Tunnel 的 HTTP 代理设置只影响 Tunnel 控制面和客户端下载，不�
 
 MCP 提交远端操作后，`ApprovalManager` 生成请求并冻结执行参数。请求根据策略进入：
 
-```text
-提交
- ├─ 符合自动授权 ──> queued_readonly ──> running
- └─ 需要人工批准 ──> pending_approval ──> running
-                                         │
-                         ┌───────────────┼───────────────┐
-                         ▼               ▼               ▼
-                    succeeded         failed       cancelled/terminated
-```
+| 准入条件 | 起始状态 | 启动条件 |
+| --- | --- | --- |
+| 符合本地自动策略 | `queued_readonly` | 本地 UI 在线且执行器空闲，重复核验规则 |
+| 携带匹配的临时授权 | `queued_authorized` | 本地 UI 在线且执行器空闲，重复核验授权 |
+| 其他操作 | `pending_approval` | 60 秒内完成本地审批，执行器空闲 |
+
+命令启动后为 `running`，最终进入 `succeeded / failed / cancelled / terminated` 等结束状态。排队和待审批请求最长保留 60 秒。
+
+授权申请使用同一请求流程，但批准时只在本机创建临时授权并把申请标记为 `succeeded`，不启动 SSH worker。授权从批准时开始计时。调用方查询 `get_auto_approval_status` 获得 `grant_id`，随后把它传给 `request_command`；没有环境覆盖的受控会话也支持该参数。带环境变量的会话仍逐次审批。
 
 关键原则：
 
@@ -67,6 +69,8 @@ MCP 提交远端操作后，`ApprovalManager` 生成请求并冻结执行参数�
 - 相同 `client_request_id` 只允许对完全相同参数做幂等重试。
 - 自动授权只决定是否跳过人工确认，不改变执行器权限。
 - 请求结果必须以最终 `status` 和命令 `exit_code` 为准。
+- 授权绑定服务器有效 SSH 配置；队列启动和 SSH 实际执行前重复检查。撤销使未执行的工作失去权限。
+- 支持的直接 Git 命令先通过有界 metadata channel 检查远端，GitHub 只走部署策略；元数据读取共享 20 秒期限、每次输出最多 32 KiB。
 
 ## 4. SSH 路由
 
@@ -163,11 +167,12 @@ SFTP 请求仍进入统一请求状态机；上传准备和下载缓存则属于
 进程内：
 
 - 请求对象和审批票据
+- 有期限和次数的临时授权
 - 受控会话
 - 活跃 SSH 连接池
 - 当前 UI 快照和连接事件详情缓存
 
-应用重启后不能依赖旧审批或旧会话继续执行。
+应用重启后不能依赖旧审批、临时授权或旧会话继续执行。
 
 ## 10. 前端数据流
 

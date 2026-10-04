@@ -43,7 +43,7 @@ export function deriveOrbit(request:RequestSummary,detail:RequestDetail|undefine
  let outcome:OrbitState['outcome']=last.event==='connection_cancelled'?'cancelled':last.event==='connection_failed'?'failed':context.role==='target'&&reused?'reused':context.role==='target'&&connected?'connected':'active';
  let code=String(metadata.code||'');
  const awaitingDetail=(request.connection_event_seq||0)>last.seq;
- if(outcome==='active'&&!awaitingDetail&&!['running','pending_approval','queued_readonly'].includes(request.status)){
+ if(outcome==='active'&&!awaitingDetail&&!['running','pending_approval','queued_readonly','queued_authorized'].includes(request.status)){
   outcome=['terminated','disconnected'].includes(request.status)?'cancelled':'failed';
   code=request.status==='timed_out'?'timeout':outcome==='cancelled'?'cancelled':'connection_error';
  }

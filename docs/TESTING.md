@@ -4,17 +4,19 @@
 
 ## 当前基线结果
 
-当前代码在建立 1.0.0 基线前的最近一轮完整验证结果：
+2026-10-04，临时授权、Git 远端策略与审批交互修改后的完整验证结果：
 
 | 范围 | 最近确认结果 |
 | --- | --- |
-| Python 后端完整套件 | 149 项运行，147 项通过，2 项因测试容器 PID namespace 与 `/proc` 视图不一致而跳过，0 失败 |
+| Python 后端完整套件 | 173 项运行，171 项通过，2 项因测试容器 PID namespace 与 `/proc` 视图不一致而跳过，0 失败 |
 | SSH 专项 | 44 项通过，0 失败 |
 | 前端逻辑单元测试 | 19 项通过，0 失败 |
 | 原有浏览器 UI 回归 | 26 项通过 |
 | SSH 连接状态浏览器场景 | 11 项通过 |
+| 临时授权与审批浏览器场景 | 7 项通过 |
+| TypeScript 与正式资源构建 | 通过，编译资源已同步 |
 
-本次 1.0.0 文档/版本基线整理没有修改业务逻辑；在当前隔离环境中已再次运行 `frontend/npm test`，结果 **19/19 通过**。当前环境没有可离线使用的项目 Python 3.12/MCP/Paramiko 依赖，因此未重新执行完整 Python 套件；这不替代发布前的 Windows/完整依赖复验。
+本轮使用项目虚拟环境执行完整 Python 套件，前端使用正式编译资源与 Chromium fixture。未连接用户真实 SSH 服务器或真实 Tunnel；Windows WebView2 与 Windows EXE 打包仍需在目标平台验收。
 
 ## 后端覆盖
 
@@ -23,6 +25,9 @@
 - 配置解析、原子写入和边界校验。
 - 审批票据、幂等请求、并发状态和本地心跳。
 - 只读命令分类、Git/Docker 受限参数、目录范围和 pytest 显式授权。
+- 临时授权的本地批准、预授权、绑定、范围、期限、次数、撤销、重启失效及排队后再校验。
+- 固定命令完整匹配、shell/内联程序拒绝，以及文件选项路径与递归符号链接限制。
+- 实际 Git URL 改写、push URL、SSH 别名、Enterprise 主机及 GitHub/其他/混合远端策略。
 - SSH 登录、密码/私钥/agent、主机指纹、连接复用和凭据失效。
 - OpenSSH config、Include、Host 模式、ProxyJump、多跳、IPv6、ProxyCommand 和循环拒绝。
 - 真实回环 Paramiko SSH server、direct-tcpip 与 SFTP 协议。
@@ -31,7 +36,7 @@
 - PID/PGID/启动时间验证、TERM/KILL 终止流程。
 - SFTP 目录、stat、文件搜索、分段读取、上传、下载、ZIP、安全校验和缓存恢复。
 - 受控会话上下文冻结、revision、关闭与已提交请求关系。
-- MCP HTTP 初始化、23 个工具发现、Host/Origin 防护。
+- MCP HTTP 初始化、28 个工具发现、临时授权申请与使用生命周期、工具注解及 Host/Origin 防护。
 - Tunnel 生命周期、代理配置、HTTP/HTTPS CONNECT、TLS 校验和本地健康地址绕过代理。
 
 ## 前端覆盖
@@ -49,6 +54,8 @@
 - 破坏性命令重新分类、终端重复行折叠和有界保留。
 
 浏览器集成测试覆盖：服务器配置、known_hosts、密码输入、审批、终端、文件、上传下载、会话、SSH 路由、Tunnel、代理、设置、缩放、减少动效和窄窗口布局。
+
+临时授权浏览器测试覆盖：一分钟期限、0.5 秒按住确认、倒计时右向左消退与按住进度左向右增长、提前释放、键盘批准、范围/次数展示、本地撤销、按住期间过期拒绝和最小窗口布局。
 
 ## 两项环境相关跳过
 
@@ -91,6 +98,7 @@ npm run build
 npx playwright install chromium
 npm run test:ui
 npm run test:orbit
+npm run test:authorizations
 ```
 
 锁文件：

@@ -10,6 +10,8 @@ SSH Gate 是一个运行在 Windows 本机的 SSH 访问网关。它通过 **Ope
 - **本地安全交互**：未知主机指纹、SSH 密码、私钥口令以及需要人工批准的操作只在本机 WebView 中处理。
 - **命令执行**：异步提交、状态查询、stdout/stderr 增量读取、受控超时和运行中终止。
 - **自动授权策略**：可按服务器配置只读类别与绝对目录范围；不满足规则的操作进入本地审批。
+- **临时免逐条审批**：ChatGPT 申请服务器、目录、能力、期限和次数范围；本地预授权或一次批准后取得 `grant_id`，可随时撤销。
+- **Git 远端策略**：GitHub 服务器副本只检查状态和拉取部署，开发使用 GitHub 工具；已核验的其他远端可申请 Git 开发权限。
 - **SFTP 文件操作**：目录列表、属性、搜索、分段读取、单文件/目录下载、单文件/ZIP 目录上传和 SHA256 校验。
 - **受控会话**：保存 cwd 与非敏感环境变量上下文；每条命令仍为独立 shell，不提供交互式 PTY。
 - **连接诊断**：记录 DNS、TCP、SSH 握手、密钥交换、主机核验和认证事件，支持失败原因与逐跳查看。
@@ -80,10 +82,11 @@ Build-App.cmd
 
 ## 请求、审批与终止
 
-远端操作通过请求对象执行。常见状态包括 `pending_approval`、`queued_readonly`、`running`、`succeeded`、`failed`、`cancelled` 等。
+远端操作通过请求对象执行。常见状态包括 `pending_approval`、`queued_readonly`、`queued_authorized`、`running`、`succeeded`、`failed`、`cancelled` 等。
 
 - 符合自动授权策略的只读请求可以直接排队执行。
 - 其他操作进入本地“请求审批”界面；审批票据与请求摘要绑定，只对该次请求有效。
+- 审批默认 60 秒到期，旧配置的更长期限也收敛至 60 秒；按住按钮或 A 键 0.5 秒批准。按钮倒计时从右向左消退，按住进度从左向右增加。
 - 待审批/排队请求使用 `cancel_pending_request` 取消。
 - 运行中的命令或传输使用 `terminate_command` 请求终止，并继续查询最终状态。
 
@@ -103,6 +106,30 @@ Build-App.cmd
 | `manual_only` | 仅人工审批 |
 
 管道、重定向、组合脚本、未知选项和写操作不会因为“看起来像只读”而自动执行。目录范围属于准入与路径检查，不是操作系统沙箱。
+
+### 临时授权
+
+调用 `request_auto_approval` 指定 `server_id`、绝对 `repo_path`、`capabilities`、目的和唯一 `client_request_id`。申请只创建本地授权请求，不执行 SSH 命令。查询 `get_auto_approval_status`；状态为 `granted` 后，在 `request_command` 的 `grant_id` 参数中使用返回的授权。
+
+| 能力 | 允许范围 |
+| --- | --- |
+| `read_fs / diagnostics / git_read / docker_read` | 现有参数级只读规则 |
+| `python_tests` | 受限 pytest；项目代码必须可信 |
+| `git_deploy_pull` | 指定远端的 `git fetch REMOTE` 和 `git pull --ff-only REMOTE BRANCH` |
+| `git_full` | 已核验的非 GitHub 仓库中常规 add/commit/push/branch/checkout/switch/merge/rebase/tag 及上述拉取；破坏性选项仍逐次审批 |
+| `exact_commands` | 本地批准的完整单条字面命令列表；不接受 shell 包装、内联程序、Git、提权、删除或关机命令 |
+
+默认授权 30 分钟、最多 50 次、单次执行最多 300 秒；本地批准可提高到最多 1 小时、100 次，并受全局命令时限限制。实际派发尝试消耗次数，失败也不退款；相同参数的幂等重试不重复消耗。授权绑定当前进程和服务器配置，重启、到期、撤销、修改服务器或关闭自动放行都会使其失效。撤销取消排队工作；已经运行的命令需单独终止。
+
+已有只读策略可预授权等同范围；服务器的 `auto_grant_capabilities` 只允许显式勾选 `python_tests`、`git_deploy_pull`，并要求 `auto_roots`。部署预授权只适用于 `origin/main`。`manual_only` 始终人工审批，`git_full` 与 `exact_commands` 也始终需要一次本地批准。界面“运行设置”可以查看范围、剩余次数和撤销授权。
+
+授权控制 SSH Gate 自身的审批，不改变 ChatGPT 平台的确认设置。构建、测试及程序执行仍使用远端账号权限，目录范围不限制程序的所有副作用。
+
+### Git 工作流
+
+先用 `inspect_repository` 获取真实仓库根和生效的 fetch/push 远端类型；执行前还会重新核验 URL 改写和简单 SSH Host 别名。GitHub.com、`ssh.github.com`、`*.ghe.com` 和本地配置的 `github_hosts` 采用部署策略。自建 GitHub Enterprise 主机或明确的 GitHub SSH 别名应在连接中登记。
+
+GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服务器上只允许受限状态检查、明确远端的 fetch 和快进 pull，首次 clone 单独审批。不自动 stash、reset 或合并分叉历史。其他远端确认后可进行完整 Git 工作流；未知或混合远端拒绝完整 Git 写操作。直接 Git 命令使用 `cwd` 参数，不接受 `git -C`、全局配置覆盖或组合 shell 包装。任意已批准脚本和受信任项目代码仍有远端账号权限；这条策略不是对其内部行为的 OS 拦截器。
 
 ## 文件与传输
 
@@ -128,11 +155,13 @@ Build-App.cmd
 
 不要把 SSH 密码、Token 等秘密放入会话环境变量。
 
-## MCP 工具（23 个）
+## MCP 工具（28 个）
 
 | 类别 | 工具 |
 | --- | --- |
 | 服务器 | `list_servers`, `test_connection` |
+| 临时授权 | `request_auto_approval`, `get_auto_approval_status`, `list_auto_approvals`, `revoke_auto_approval` |
+| Git 核验 | `inspect_repository` |
 | 命令 | `request_command`, `get_command_status`, `read_command_output`, `cancel_pending_request`, `terminate_command` |
 | 文件系统 | `list_directory`, `stat_path`, `read_file`, `find_files` |
 | 下载 | `download_file`, `download_directory`, `read_download_chunk` |

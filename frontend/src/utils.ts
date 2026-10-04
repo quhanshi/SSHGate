@@ -1,7 +1,7 @@
 import type {RequestDetail,RequestSummary,Line} from './types.ts';
-export const statusLabels:Record<string,string>={pending_approval:'等待审批',queued_readonly:'只读排队',running:'执行中',succeeded:'成功',failed:'失败',denied:'已拒绝',expired:'已过期',timed_out:'已超时',disconnected:'已断开',terminated:'已终止',termination_unconfirmed:'终止未确认'};
-export const phaseLabels:Record<string,string>={waiting_approval:'等待审批',connecting:'准备连接',resolving_dns:'解析 DNS',connecting_tcp:'连接 TCP',opening_jump_channel:'建立跳板转发',starting_proxy:'启动本地代理',handshaking_ssh:'SSH 握手',authenticating:'SSH 认证',awaiting_local_credentials:'等待本地密码',connected:'已连接',opening_sftp:'打开文件通道',checking_cwd:'检查目录',checking_default_cwd:'检查默认目录',executing:'远程执行',terminating:'正在终止',finished:'已结束'};
-export const active=(r:RequestSummary)=>['running','pending_approval','queued_readonly'].includes(r.status);
+export const statusLabels:Record<string,string>={pending_approval:'等待审批',queued_readonly:'只读排队',queued_authorized:'授权排队',running:'执行中',succeeded:'成功',failed:'失败',denied:'已拒绝',expired:'已过期',timed_out:'已超时',disconnected:'已断开',terminated:'已终止',termination_unconfirmed:'终止未确认'};
+export const phaseLabels:Record<string,string>={waiting_approval:'等待审批',connecting:'准备连接',resolving_dns:'解析 DNS',connecting_tcp:'连接 TCP',opening_jump_channel:'建立跳板转发',starting_proxy:'启动本地代理',handshaking_ssh:'SSH 握手',authenticating:'SSH 认证',awaiting_local_credentials:'等待本地密码',connected:'已连接',opening_sftp:'打开文件通道',checking_cwd:'检查目录',checking_repository:'核对 Git 仓库',checking_default_cwd:'检查默认目录',executing:'远程执行',terminating:'正在终止',finished:'已结束'};
+export const active=(r:RequestSummary)=>['running','pending_approval','queued_readonly','queued_authorized'].includes(r.status);
 export const stamp=(value:string|number|null|undefined)=>value?new Date(value).toLocaleTimeString('zh-CN',{hour12:false}):'—';
 export const elapsed=(n:number)=>[Math.floor(n/3600),Math.floor(n/60)%60,Math.floor(n)%60].map(x=>String(x).padStart(2,'0')).join(':');
 export const clean=(s:string)=>s.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g,'');

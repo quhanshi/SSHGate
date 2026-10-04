@@ -31,7 +31,7 @@ export default function App(){
  const orbit=(focus?orbits[focus]:undefined)||Object.values(orbits).find(o=>o.outcome==='active')||Object.values(orbits)[0];
  const orbitServer=data?.servers.find(s=>s.id===orbit?.request.server_id);
  const animateLeave=useCallback((id:string,kind:string)=>{setLeaving(prev=>({...prev,[id]:kind}));leaveTimers.current.push(setTimeout(()=>setLeaving(prev=>{const next={...prev};delete next[id];return next;}),450));},[]);
- const approved=useCallback(async(id:string)=>{animateLeave(id,'approved');notify('已批准本次执行');await refresh();},[animateLeave,notify,refresh]);
+ const approved=useCallback(async(id:string)=>{animateLeave(id,'approved');notify('请求已批准');await refresh();},[animateLeave,notify,refresh]);
  const hold=useHoldApproval(approved,report);
  const reject=useCallback((id:string)=>{hold.stop();void act(async()=>{await api('reject',id);animateLeave(id,'leaving');},'请求已拒绝');},[act,animateLeave,hold.stop]);
  const pending=data?.requests.filter(r=>r.status==='pending_approval')||[];
@@ -75,7 +75,7 @@ export default function App(){
    if(isEditing(e.target)||modal||data?.prompt||drawer||e.ctrlKey||e.altKey||e.metaKey)return;
    const k=e.key.toLowerCase(),index=pending.findIndex(r=>r.request_id===gateSelected);
    if(k==='j'||k==='k'){e.preventDefault();hold.stop();const next=pending[(Math.max(0,index)+(k==='j'?1:-1)+pending.length)%pending.length];if(next){setGateSelected(next.request_id);setGateOpen(true);}}
-   else if(k==='a'&&!e.repeat&&gateSelected&&!data?.requests.some(r=>r.status==='running')&&details[gateSelected]){e.preventDefault();setGateOpen(true);void hold.begin(gateSelected);}
+   else if(k==='a'&&!e.repeat&&gateSelected&&(!data?.requests.some(r=>r.status==='running')||details[gateSelected]?.operation==='request_auto_approval')&&details[gateSelected]){e.preventDefault();setGateOpen(true);void hold.begin(gateSelected);}
    else if(k==='r'&&!e.repeat&&gateSelected){e.preventDefault();reject(gateSelected);}
    else if(e.key==='Enter'&&gateSelected){e.preventDefault();onRequest(gateSelected);}
   };

@@ -32,6 +32,8 @@ class Server:
     ssh_config_file: str = ""
     auto_categories: tuple[str, ...] = ()
     auto_roots: tuple[str, ...] = ()
+    auto_grant_capabilities: tuple[str, ...] = ()
+    github_hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,13 +115,24 @@ def load_config(path: Path) -> Config:
                 raise ValueError(f"{field} 文件不存在")
         categories = raw.get("auto_categories", [])
         roots = raw.get("auto_roots", [])
+        grant_capabilities = raw.get("auto_grant_capabilities", [])
+        github_hosts = raw.get("github_hosts", [])
+        if (not isinstance(grant_capabilities, (list, tuple)) or
+                any(c not in {"git_deploy_pull", "python_tests"} for c in grant_capabilities) or
+                (grant_capabilities and not roots)):
+            raise ValueError("临时授权预授权仅支持部署拉取和 pytest，且必须指定绝对目录")
+        if (not isinstance(github_hosts, (list, tuple)) or any(not isinstance(h, str) or
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", h) for h in github_hosts)):
+            raise ValueError("GitHub Enterprise 主机名无效")
         if (not isinstance(categories, (list, tuple)) or any(c not in {"read_fs", "diagnostics", "git_read", "docker_read", "python_tests", "manual_only"} for c in categories)
                 or not isinstance(roots, (list, tuple)) or any(not isinstance(p, str) or not p.startswith("/") or ".." in p.split("/") for p in roots)):
             raise ValueError("自动授权类别或绝对目录范围无效")
         for p in roots:
             checked_text(p, "授权目录")
         servers.append(Server(sid, label, target, cwd, port, **paths,
-                              auto_categories=tuple(categories), auto_roots=tuple(roots)))
+                              auto_categories=tuple(categories), auto_roots=tuple(roots),
+                              auto_grant_capabilities=tuple(grant_capabilities),
+                              github_hosts=tuple(h.lower().rstrip('.') for h in github_hosts)))
         ids.add(sid)
     if type(data.get("auto_allow_readonly", True)) is not bool:
         raise ValueError("auto_allow_readonly 必须是 true 或 false")
@@ -147,7 +160,7 @@ def load_config(path: Path) -> Config:
     return Config(
         root=root,
         listen_port=integer(data.get("listen_port", 8765), 1024, 65535, "本地 MCP 端口"),
-        approval_timeout_seconds=integer(data.get("approval_timeout_seconds", 600), 10, 3600, "审批期限"),
+        approval_timeout_seconds=min(60, integer(data.get("approval_timeout_seconds", 60), 10, 3600, "审批期限")),
         max_command_timeout_seconds=integer(data.get("max_command_timeout_seconds", 3600), 1, 86400, "命令最长时间"),
         output_limit_bytes=integer(data.get("output_limit_bytes", 1048576), 4096, 4194304, "输出上限"),
         ssh_executable=ssh,
