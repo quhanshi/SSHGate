@@ -1,5 +1,6 @@
 import {useEffect,useRef,useState} from 'react';
 import {api} from '../api';
+import {Fingerprint} from './Fingerprint';
 import type {Modal,Profiles,Prompt,Route,Session,Snapshot} from '../types';
 function value(form:HTMLFormElement,name:string){return (form.elements.namedItem(name) as HTMLInputElement|null)?.value||'';}
 function checked(form:HTMLFormElement,name:string){return !!(form.elements.namedItem(name) as HTMLInputElement|null)?.checked;}
@@ -33,7 +34,7 @@ export function ConnectionFields({data,id,policy}:{data:Snapshot;id?:string;poli
   {error&&<p className="error">{error}</p>}
  </div>;
 }
-export function ModalHost({modal,data,onClose,onRefresh,onRequest}:{modal:Exclude<Modal,null>;data:Snapshot;onClose:()=>void;onRefresh:()=>Promise<void>;onRequest:(id:string)=>void}){
+export function ModalHost({modal,data,onClose,onRefresh,onRequest,onConnect}:{modal:Exclude<Modal,null>;data:Snapshot;onClose:()=>void;onRefresh:()=>Promise<void>;onRequest:(id:string)=>void;onConnect:(id:string,server:string)=>void}){
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[session,setSession]=useState<Session|null>(null),formRef=useRef<HTMLFormElement>(null);
  const sessionId=(modal.kind==='session'||modal.kind==='session-command')?modal.id:undefined;
  useEffect(()=>{let alive=true;if(sessionId)void api('session_detail',sessionId).then(s=>{if(alive)setSession(s);}).catch(e=>{if(alive)setError(String(e));});return()=>{alive=false;};},[sessionId]);
@@ -42,12 +43,12 @@ export function ModalHost({modal,data,onClose,onRefresh,onRequest}:{modal:Exclud
  const submit=async(event:React.FormEvent<HTMLFormElement>)=>{
   event.preventDefault();if(busy)return;setBusy(true);setError('');const form=event.currentTarget;
   try{
-   let request:RequestSummaryLike|null=null;
+   let request:RequestSummaryLike|null=null,connectionServer='';
    if(modal.kind==='connection'){
     const host=value(form,'host').trim(),user=value(form,'user').trim(),defaults=checked(form,'policy_default'),categories=new FormData(form).getAll('category').map(String),roots=value(form,'auto_roots').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
     if(!defaults&&categories.includes('python_tests')&&!roots.length)throw new Error('自动测试执行必须指定授权目录');
     const id=value(form,'id').trim();await api('save_connection',{id,label:value(form,'label').trim(),ssh_target:user?user+'@'+host:host,default_cwd:value(form,'default_cwd').trim()||'.',port:value(form,'port')?Number(value(form,'port')):null,identity_file:value(form,'identity_file').trim(),ssh_config_file:value(form,'ssh_config_file').trim(),auto_categories:defaults?[]:categories.length?categories:['manual_only'],auto_roots:defaults?[]:roots},!!modal.server);
-    if((event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')==='test')request=await api('test_connection',id);
+    if((event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')==='test'){request=await api('test_connection',id);connectionServer=id;}
    }else if(modal.kind==='command')request=await api('submit_local',value(form,'server_id'),value(form,'command'),value(form,'reason'),value(form,'cwd'),Number(value(form,'timeout')));
    else if(modal.kind==='upload'){const operation=value(form,'operation');const args:Record<string,unknown>={path:value(form,'path'),transfer_id:modal.transfer.transfer_id};if(operation==='upload_file')args.overwrite=checked(form,'overwrite');request=await api('filesystem',value(form,'server_id'),operation,args);}
    else if(modal.kind==='session'){
@@ -55,7 +56,7 @@ export function ModalHost({modal,data,onClose,onRefresh,onRequest}:{modal:Exclud
     const values:Record<string,unknown>={server_id:value(form,'server_id'),cwd:value(form,'cwd'),environment};if(modal.id)values.session_id=modal.id;request=await api('session_action',modal.id?'update':'create',values);
    }else if(modal.kind==='session-command')request=await api('session_action','execute',{session_id:modal.id,command:value(form,'command'),reason:value(form,'reason'),timeout_seconds:Number(value(form,'timeout'))});
    else if(modal.kind==='confirm')await modal.run();
-   onClose();await onRefresh();if(request)onRequest(request.request_id);
+   onClose();await onRefresh();if(request){if(connectionServer)onConnect(request.request_id,connectionServer);else onRequest(request.request_id);}
   }catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
  };
  const select=<label>服务器<select name="server_id" defaultValue={session?.server_id||serverId} disabled={!!sessionId} required>{data.servers.map(s=><option key={s.id} value={s.id}>{s.label} / {s.ssh_target}</option>)}</select></label>;
@@ -64,7 +65,7 @@ export function ModalHost({modal,data,onClose,onRefresh,onRequest}:{modal:Exclud
   <fieldset disabled={busy} className="modal-fields">
    {modal.kind==='connection'&&<ConnectionFields data={data} id={modal.server} policy={modal.policy}/>}
    {modal.kind==='command'&&<>{select}<label>工作目录<input name="cwd" defaultValue={data.servers.find(s=>s.id===serverId)?.default_cwd||'.'} required/></label>{commands}</>}
-   {modal.kind==='upload'&&<><p>{modal.transfer.file_name} · {modal.transfer.size_bytes} bytes</p><p className="inline-help">SHA256 {modal.transfer.sha256}</p>{select}<label>模式<select name="operation" id="up-mode"><option value="upload_file">上传为单文件</option><option value="upload_directory">ZIP 解压到新目录</option></select></label><label>远程完整目标路径<input id="up-path" name="path" placeholder="/data/project/patch.zip" required/></label><label className="check"><input id="up-overwrite" name="overwrite" type="checkbox"/>允许覆盖已有普通文件 / 单文件模式</label><p className="inline-help">提交后仍需在闸门核对并批准。</p></>}
+   {modal.kind==='upload'&&<><p>{modal.transfer.file_name} · {modal.transfer.size_bytes} bytes</p><p className="inline-help">SHA256 {modal.transfer.sha256}</p>{select}<label>模式<select name="operation" id="up-mode"><option value="upload_file">上传为单文件</option><option value="upload_directory">ZIP 解压到新目录</option></select></label><label>远程完整目标路径<input id="up-path" name="path" placeholder="/data/project/patch.zip" required/></label><label className="check"><input id="up-overwrite" name="overwrite" type="checkbox"/>允许覆盖已有普通文件 / 单文件模式</label><p className="inline-help">提交后仍需核对并批准。</p></>}
    {modal.kind==='session'&&(!sessionId||session)?<div key={session?.revision||0}>{select}<label>工作目录<input id="session-cwd" name="cwd" defaultValue={session?.cwd||data.servers.find(s=>s.id===serverId)?.default_cwd||'.'} required/></label><label>环境变量 / JSON<textarea id="session-env" name="environment" rows={5} defaultValue={JSON.stringify(session?.environment||{},null,2)} required spellCheck={false}/></label><p className="inline-help">修改上下文需要审批；请勿填写密码。</p></div>:null}
    {modal.kind==='session-command'&&<><p>{session?.server_id} · {session?.cwd||'读取上下文…'}</p>{commands}</>}
    {modal.kind==='confirm'&&<p className="modal-intro">{modal.text}</p>}
@@ -79,7 +80,7 @@ export function PromptDialog({prompt,onRefresh,onError}:{prompt:Prompt;onRefresh
  const answer=async(response:unknown)=>{if(busy)return;setBusy(true);setError('');try{await api('answer_prompt',prompt.id,response);await onRefresh();}catch(e){setError(String(e));onError(e);}finally{setBusy(false);}};
  const d=prompt.data;
  return <Dialog title={prompt.kind==='credentials'?'SSH 本地登录':'确认新的主机指纹'} onClose={()=>void answer(null)}><p className="modal-intro">{d.role==='jump'?'跳板机':'目标服务器'} · {d.host_alias||d.hostname}</p><div className="fingerprint-value">{d.username?d.username+'@':''}{d.hostname}:{d.port}</div>
-  {prompt.kind==='credentials'?<form onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let secret=input.current?.value||'';if(!secret){setError('请输入密码或私钥口令');return;}const mode=value(form,'mode'),remember=checked(form,'remember');if(input.current)input.current.value='';void answer({secret,mode,remember});secret='';}}><p className="inline-help">密码仅用于本机 SSH 认证；不会写入 config.json 或审计日志。</p><label>认证方式<select name="mode"><option value="password">服务器密码</option><option value="passphrase">私钥口令</option></select></label><label>密码 / 私钥口令<div className="input-with-button"><input id="ssh-secret" ref={input} type={visible?'text':'password'} autoComplete="off" autoFocus required/><button type="button" className="button" onClick={()=>setVisible(!visible)} aria-label="显示或隐藏密码">{visible?'隐藏':'显示'}</button></div></label><label className="check"><input id="remember-ssh-secret" name="remember" type="checkbox" defaultChecked/>记住此凭据</label><p className="inline-help">勾选后使用 AES-256-GCM 加密保存到当前用户的数据目录；主密钥不放在项目目录。认证第 {d.attempt||1} / 3 次</p><div className="modal-actions"><button type="button" className="button" disabled={busy} onClick={()=>void answer(null)}>取消登录</button><button type="submit" className="button primary" disabled={busy}>登录</button></div></form>:<><p>通过可信渠道核对指纹，再决定是否继续连接。</p><p className="inline-help">密钥类型 {d.key_type}</p><div className="fingerprint-value">{d.fingerprint}</div><p className="inline-help">保存位置：{d.known_hosts_file}</p><div className="modal-actions"><button className="button" disabled={busy} onClick={()=>void answer(null)}>拒绝连接</button><button className="button" disabled={busy} onClick={()=>void answer('once')}>仅本次会话信任</button><button className="button primary" disabled={busy} onClick={()=>void answer('save')}>信任并保存</button></div></>}
+  {prompt.kind==='credentials'?<form onSubmit={e=>{e.preventDefault();const form=e.currentTarget;let secret=input.current?.value||'';if(!secret){setError('请输入密码或私钥口令');return;}const mode=value(form,'mode'),remember=checked(form,'remember');if(input.current)input.current.value='';void answer({secret,mode,remember});secret='';}}><p className="inline-help">密码仅用于本机 SSH 认证；不会写入 config.json 或审计日志。</p><label>认证方式<select name="mode"><option value="password">服务器密码</option><option value="passphrase">私钥口令</option></select></label><label>密码 / 私钥口令<div className="input-with-button"><input id="ssh-secret" ref={input} type={visible?'text':'password'} autoComplete="off" autoFocus required/><button type="button" className="button" onClick={()=>setVisible(!visible)} aria-label="显示或隐藏密码">{visible?'隐藏':'显示'}</button></div></label><label className="check"><input id="remember-ssh-secret" name="remember" type="checkbox" defaultChecked/>记住此凭据</label><p className="inline-help">勾选后使用 AES-256-GCM 加密保存到当前用户的数据目录；主密钥不放在项目目录。认证第 {d.attempt||1} / 3 次</p><div className="modal-actions"><button type="button" className="button" disabled={busy} onClick={()=>void answer(null)}>取消登录</button><button type="submit" className="button primary" disabled={busy}>登录</button></div></form>:<><p>通过可信渠道核对指纹，再决定是否继续连接。</p><Fingerprint value={d.fingerprint||''}/><p className="inline-help">密钥类型 {d.key_type}</p><div className="fingerprint-value">{d.fingerprint}</div><p className="inline-help">保存位置：{d.known_hosts_file}</p><div className="modal-actions"><button className="button" disabled={busy} onClick={()=>void answer(null)}>拒绝连接</button><button className="button" disabled={busy} onClick={()=>void answer('once')}>仅本次会话信任</button><button className="button primary" disabled={busy} onClick={()=>void answer('save')}>信任并保存</button></div></>}
   {error&&<div className="modal-error" role="alert">{error}</div>}
  </Dialog>;
 }

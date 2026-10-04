@@ -45,7 +45,7 @@ export function useDesktop(){
    for(const r of candidates){
     let c=cursor.current.get(r.request_id);
     if(!c){c={out:0,err:0,signature:'',started:false,finished:false,progress:-1,partial:{out:null,err:null},key:{out:false,err:false}};cursor.current.set(r.request_id,c);}
-    const signature=[r.status,r.output_bytes,r.phase,r.progress_bytes].join('|');
+    const signature=[r.status,r.output_bytes,r.phase,r.progress_bytes,r.connection_event_seq].join('|');
     const cached=detailRef.current[r.request_id];const unread=cached&&(c.out<cached.stdout_length||c.err<cached.stderr_length);
     if(c.signature===signature&&!unread)continue;
     if(budget<=0)break;if((retry.current.get(r.request_id)||0)>Date.now())continue;budget--;

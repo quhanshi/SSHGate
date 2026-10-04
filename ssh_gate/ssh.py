@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import hashlib
 import os
 import re
@@ -19,6 +20,7 @@ import paramiko
 from .ssh_config import SSHSettings, resolve_settings, config_profiles
 from .prompts import LocalPrompts, PromptCancelled
 from .credentials import CredentialStore
+from .ssh_trace import ConnectionTrace, HostKeyRejected, ObservedSSHClient, ObservedTransport, failure_code
 
 
 def cwd_expression(cwd: str) -> str:
@@ -81,12 +83,16 @@ class RunResult:
 
 
 class LocalHostKeyPolicy(paramiko.MissingHostKeyPolicy):
-    def __init__(self, settings: SSHSettings, prompts: LocalPrompts, stop: threading.Event):
+    def __init__(self, settings: SSHSettings, prompts: LocalPrompts, stop: threading.Event, trace=None):
         self.settings, self.prompts, self.stop = settings, prompts, stop
         self.context = {}
+        self.trace = trace
 
     def missing_host_key(self, client, hostname, key):
         fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(key.asbytes()).digest()).decode().rstrip("=")
+        if self.trace:
+            self.trace.emit("host_key_confirmation_required", stage="host_key",
+                            key_type=key.get_name(), fingerprint=fingerprint)
         response = self.prompts.ask("host_key", {
             "hostname": self.settings.hostname, "port": self.settings.port,
             "verification_name": self.settings.verification_name,
@@ -95,7 +101,7 @@ class LocalHostKeyPolicy(paramiko.MissingHostKeyPolicy):
             **self.context,
         }, self.stop)
         if response not in {"once", "save"}:
-            raise PromptCancelled("用户未接受主机指纹")
+            raise HostKeyRejected("用户未接受主机指纹")
         client.get_host_keys().add(hostname, key.get_name(), key)
         if response == "save":
             target = Path(self.settings.known_hosts_files[0])
@@ -108,6 +114,8 @@ class LocalHostKeyPolicy(paramiko.MissingHostKeyPolicy):
                 out.write(line.encode("ascii"))
                 out.flush()
                 os.fsync(out.fileno())
+        if self.trace:
+            self.trace.trust_source = "user_saved" if response == "save" else "user_once"
 
 
 def load_preferred_host_keys(client: paramiko.SSHClient, settings: SSHSettings) -> None:
@@ -177,6 +185,7 @@ class SSHRunner:
     def _connect(self, settings: SSHSettings, stop: threading.Event, progress=None):
         progress = progress or (lambda **values: None)
         route = [*settings.jump_hosts, settings]
+        route_started = time.monotonic()
         parent = None
         for index, node in enumerate(route):
             context = {"host_alias": node.host_alias or node.hostname, "hostname": node.hostname,
@@ -185,7 +194,8 @@ class SSHRunner:
                        "via_host_alias": (route[index-1].host_alias or route[index-1].hostname) if index else None}
             def report(_context=context, **values):
                 progress(connection_context=_context, **values)
-            parent = self._connect_one(node, stop, report, via=parent, context=context)
+            parent = self._connect_one(node, stop, report, via=parent, context=context,
+                                       route_started=route_started)
         with self._lock: self._targets[settings.connection_id] = settings
         return parent
 
@@ -206,14 +216,30 @@ class SSHRunner:
                 except (ValueError, TypeError, OSError, paramiko.SSHException, paramiko.UnknownKeyType): pass
         return allowed
 
-    def _connect_one(self, settings: SSHSettings, stop: threading.Event, progress, *, via=None, context=None):
+    def _connect_one(self, settings: SSHSettings, stop: threading.Event, progress, *, via=None,
+                     context=None, route_started=None):
+        trace = ConnectionTrace(progress, route_started if route_started is not None else time.monotonic())
+        trace.emit("connection_started")
+        try:
+            return self._connect_one_traced(settings, stop, progress, trace, via=via, context=context)
+        except Exception as exc:
+            trace.fail(exc, stop)
+            raise
+        finally:
+            trace.close()
+
+    def _connect_one_traced(self, settings, stop, progress, trace, *, via=None, context=None):
         context = context or {}
         with self._lock:
-            if self._closed: raise PromptCancelled("后端已关闭")
+            if self._closed or stop.is_set(): raise PromptCancelled("后端已关闭或连接已取消")
             existing = self._clients.get(settings)
             same_parent = self._parents.get(settings) is via
-        if existing and same_parent and existing.get_transport() and existing.get_transport().is_active():
+        if (existing and same_parent and existing.get_transport() and existing.get_transport().is_active()
+                and existing.get_transport().is_authenticated()):
             progress(phase="connected")
+            transport = existing.get_transport()
+            summary = transport.public_summary() if isinstance(transport, ObservedTransport) else {}
+            trace.emit("connection_reused", stage="connected", **summary)
             return existing
         if existing: existing.close()
 
@@ -225,6 +251,8 @@ class SSHRunner:
         while True:
             if stop.is_set():
                 raise PromptCancelled("已取消连接")
+            trace.attempt += 1
+            trace.emit("attempt_started", stage="connecting")
             secret = None
             mode = "key"
             source = "key"
@@ -239,11 +267,13 @@ class SSHRunner:
                 if saved:
                     secret, mode, source = saved["secret"], saved["mode"], "saved"
                     progress(phase="authenticating_saved_credential")
+                    trace.emit("saved_credential_selected", stage="authentication", mode=mode)
                 else:
                     if prompt_attempt >= 3:
                         raise paramiko.AuthenticationException("本地密码/私钥口令认证失败，请重新申请连接")
                     prompt_attempt += 1
                     progress(phase="awaiting_local_credentials")
+                    trace.emit("credentials_required", stage="authentication", prompt_attempt=prompt_attempt)
                     answer = self.prompts.ask("credentials", {
                         "hostname": settings.hostname, "username": settings.username,
                         "port": settings.port, "attempt": prompt_attempt,
@@ -253,13 +283,15 @@ class SSHRunner:
                     remember = bool(answer.get("remember", False))
                     source = "prompt"
                     answer.clear()
-            client = paramiko.SSHClient()
+            client = ObservedSSHClient(trace, progress)
             load_preferred_host_keys(client, settings)
+            trace.trust_source = "known_hosts"
             actual_name = settings.hostname if settings.port == 22 else f"[{settings.hostname}]:{settings.port}"
             if not client.get_host_keys().lookup(actual_name):
                 for algorithm, key in self._trusted_keys.get(settings, {}).items():
                     client.get_host_keys().add(actual_name, algorithm, key)
-            policy = LocalHostKeyPolicy(settings, self.prompts, stop)
+                    trace.trust_source = "session"
+            policy = LocalHostKeyPolicy(settings, self.prompts, stop, trace)
             policy.context = context
             client.set_missing_host_key_policy(policy)
             proxy = None
@@ -267,51 +299,64 @@ class SSHRunner:
             try:
                 if via:
                     progress(phase="opening_jump_channel")
+                    trace.emit("jump_channel_started", stage="tcp")
                     if not via.get_transport() or not via.get_transport().is_active():
                         raise paramiko.SSHException("上游跳板连接已经断开")
                     network = via.get_transport().open_channel('direct-tcpip',
                         (settings.hostname, settings.port), ('127.0.0.1', 0), timeout=15)
+                    trace.emit("jump_channel_opened", stage="tcp")
                 elif settings.proxy_command:
                     progress(phase="starting_proxy")
+                    trace.emit("proxy_started", stage="proxy")
                     proxy = paramiko.ProxyCommand(settings.proxy_command)
+                    trace.emit("proxy_process_started", stage="proxy")
                 else:
                     progress(phase="resolving_dns")
+                    trace.emit("dns_started", stage="dns")
                     addresses=socket.getaddrinfo(settings.hostname,settings.port,type=socket.SOCK_STREAM)
+                    trace.emit("dns_resolved", stage="dns", address_count=len(addresses))
                     progress(phase="connecting_tcp")
                     errors=[]
                     for family, socktype, proto, _name, address in addresses:
                         if stop.is_set(): raise PromptCancelled("已取消连接")
+                        trace.emit("tcp_started", stage="tcp", address=address[0], port=address[1])
                         network=socket.socket(family,socktype,proto)
                         network.setblocking(False)
                         code=network.connect_ex(address)
                         deadline=time.monotonic()+15
-                        while code and not stop.is_set() and time.monotonic()<deadline:
+                        pending_codes = {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY,
+                                         errno.EINTR, 10035, 10036, 10037}
+                        while code in pending_codes and not stop.is_set() and time.monotonic()<deadline:
                             _read,writable,_error=select.select([], [network], [network], .1)
-                            if writable:
+                            if writable or _error:
                                 code=network.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)
                                 break
                         if stop.is_set(): network.close(); raise PromptCancelled("已取消连接")
-                        if not code: network.setblocking(True); network.settimeout(15); break
-                        errors.append(code); network.close(); network=None
-                    if network is None: raise OSError("TCP 连接失败或超时")
+                        if not code:
+                            network.setblocking(True); network.settimeout(15)
+                            trace.emit("tcp_connected", stage="tcp", address=address[0], port=address[1])
+                            break
+                        failure = (TimeoutError("TCP 连接超时") if code in pending_codes or code in {errno.ETIMEDOUT, 10060}
+                                   else OSError(code, "TCP 连接失败"))
+                        trace.emit("tcp_address_failed", stage="tcp", address=address[0], port=address[1],
+                                   code=failure_code(failure, "tcp"))
+                        errors.append(failure); network.close(); network=None
+                    if network is None:
+                        if errors: raise errors[-1]
+                        raise OSError("DNS 未返回可连接的地址")
                 progress(phase="handshaking_ssh")
+                trace.emit("ssh_handshake_started", stage="ssh_banner")
                 allowed_keys = self._identity_public_keys(settings, secret if mode == 'passphrase' else None) if settings.identities_only else set()
-                class ObservedTransport(paramiko.Transport):
-                    def auth_publickey(self, username, key, *args, **kwargs):
-                        if settings.identities_only and key.asbytes() not in allowed_keys:
-                            raise paramiko.AuthenticationException("密钥未在此 Host 的 IdentityFile 中配置")
-                        return super().auth_publickey(username, key, *args, **kwargs)
-                    def start_client(self,*args,**kwargs):
-                        result=super().start_client(*args,**kwargs)
-                        progress(phase="authenticating")
-                        return result
+                def transport_factory(*args, **kwargs):
+                    return ObservedTransport(*args, trace=trace,
+                                             allowed_keys=allowed_keys if settings.identities_only else None, **kwargs)
                 client.connect(
                     settings.hostname, port=settings.port, username=settings.username,
                     key_filename=([p for p in settings.identity_files if Path(p).is_file()] or None) if mode != "password" else None,
                     password=secret if mode == "password" else None,
                     passphrase=secret if mode == "passphrase" else None,
                     allow_agent=(mode != "password"), look_for_keys=(mode != "password" and not settings.identities_only),
-                    timeout=15, banner_timeout=15, auth_timeout=15, channel_timeout=15, sock=proxy or network, transport_factory=ObservedTransport,
+                    timeout=15, banner_timeout=15, auth_timeout=15, channel_timeout=15, sock=proxy or network, transport_factory=transport_factory,
                 )
                 client.get_transport().set_keepalive(15)
                 with self._lock:
@@ -322,6 +367,8 @@ class SSHRunner:
                     self._parents[settings] = via
                 if source == "prompt" and remember and credential_ref and self.credentials:
                     self.credentials.save(credential_ref, mode, secret)
+                progress(phase="connected")
+                trace.emit("connected", stage="connected", **client.get_transport().public_summary())
                 return client
             except (paramiko.AuthenticationException, paramiko.PasswordRequiredException):
                 self._trusted_keys[settings] = dict(client.get_host_keys().lookup(actual_name) or {})
@@ -332,6 +379,7 @@ class SSHRunner:
                     self.credentials.delete(credential_ref)
                 if source == "prompt" and prompt_attempt >= 3:
                     raise paramiko.AuthenticationException("本地密码/私钥口令认证失败，请重新申请连接")
+                trace.emit("authentication_retry", stage="authentication", source=source)
                 # key/agent failure, stale saved credential, or a retryable prompted credential
                 continue
             except paramiko.SSHException as exc:
@@ -351,6 +399,7 @@ class SSHRunner:
                     self.credentials.delete(credential_ref)
                 if source == "prompt" and prompt_attempt >= 3:
                     raise paramiko.AuthenticationException("没有可用的认证方式")
+                trace.emit("authentication_retry", stage="authentication", source=source)
                 continue
             except BaseException:
                 client.close()
@@ -358,6 +407,8 @@ class SSHRunner:
                     proxy.close()
                 raise
             finally:
+                client.detach_trace()
+                policy.trace = None
                 secret = None
                 if network and not client.get_transport(): network.close()
 
@@ -481,14 +532,16 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
             return RunResult(None,disconnected=True,error=f"{phase}: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] 本地 SSH 输入已取消或超时",termination={"state":"not_started","remote_group_terminated":True})
         except paramiko.BadHostKeyException:
             return RunResult(None,error=f"handshaking_ssh: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] 主机指纹与 ~/.ssh/known_hosts 不符，已拒绝连接")
-        except paramiko.AuthenticationException:
-            return RunResult(None,error=f"authenticating: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] SSH 认证失败；密码未保存")
+        except paramiko.AuthenticationException as exc:
+            return RunResult(None,timed_out=failure_code(exc, phase)=="timeout",
+                             error=f"authenticating: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] SSH 认证失败；密码未保存")
         except Exception as exc:
             termination=self._terminate_job(client,token) if client and launched else {}
             if stop.is_set() and not launched:
                 return RunResult(None,disconnected=True,error=f"{phase}: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] {type(exc).__name__}: {exc}",
                                  termination={"state":"sftp_or_connection_cancelled","remote_group_terminated":True})
-            return RunResult(None,error=f"{phase}: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] {type(exc).__name__}: {exc}",termination=termination)
+            return RunResult(None,timed_out=failure_code(exc, phase)=="timeout",
+                             error=f"{phase}: [{connection_context.get('role','target')} {connection_context.get('host_alias',payload.ssh_settings.hostname)}] {type(exc).__name__}: {exc}",termination=termination)
         finally:
             if sftp: sftp.close()
             if channel: channel.close()

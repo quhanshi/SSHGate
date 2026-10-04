@@ -1,5 +1,7 @@
 import {useEffect,useRef} from 'react';
 import {redact,risk} from '../utils';
+import {createOrbitPainter} from '../orbitDrawing';
+import type {OrbitState} from '../connection';
 import type {Effects,RequestSummary,Server} from '../types';
 // Static filler so the terrain reads as code before any real output has drifted into it. Contains no user data.
 const CORPUS=['const horizon = height * (danger ? .50 : .44);','for (const row of rows) draw(row, depth, relief(row));','approve(request_id, ticket) // hold confirmed · single use','stream.read(offset, 65536).then(chunk => term.append(redact(chunk)));','ssh -o BatchMode=yes -o ConnectTimeout=8 "$TARGET" -- "$COMMAND"','policy.readonly.match(argv) ? autoAllow(request) : gate.enqueue(request);','tunnel.status === "READY" && mcp.listen(18765, "127.0.0.1");','known_hosts.verify(host, fingerprint) || prompt.confirm(fingerprint);','session.env = { ...session.env, PROJECT_MODE }; cwd = resolve(cwd);','export async function snapshot() { return api.call("snapshot"); }','if (exit_code !== 0) log.warn(`exit ${exit_code}`, stderr);','rsync -az --partial ./dist/ deploy@host:/srv/app/'];
@@ -16,11 +18,12 @@ const mod=(a:number,b:number)=>((a%b)+b)%b;
 const hash=(n:number)=>{const s=Math.sin(n*12.9898)*43758.5453;return s-Math.floor(s);};
 // Rolling hills, 0..1: a valley straight ahead, ridges toward the sides and the horizon.
 const relief=(x:number,z:number)=>{const n=Math.sin(x*.031+z*.11)*.8+Math.sin(x*.013-z*.06+1.7)+Math.sin(x*.067+z*.19+.6)*.3+Math.sin((x+z*7)*.021+4.1)*.5,r=Math.min(1,Math.max(0,n/5.2+.5));return r*r*(.3+.7*smooth(8,70,Math.abs(x)));};
-export function Scene({servers,requests,focus,effects,online,terrain}:{servers:Server[];requests:RequestSummary[];focus:string|null;effects:Effects;online:boolean;terrain:React.RefObject<string[]>}){
- const canvas=useRef<HTMLCanvasElement>(null),latest=useRef({servers,requests,focus,effects,online});latest.current={servers,requests,focus,effects,online};
+export function Scene({servers,requests,focus,effects,online,terrain,orbits,orbitServer,reduced}:{orbits:Record<string,OrbitState>;orbitServer?:string;reduced:boolean;servers:Server[];requests:RequestSummary[];focus:string|null;effects:Effects;online:boolean;terrain:React.RefObject<string[]>}){
+ const canvas=useRef<HTMLCanvasElement>(null),latest=useRef({servers,requests,focus,effects,online,orbits,orbitServer,reduced});latest.current={servers,requests,focus,effects,online,orbits,orbitServer,reduced};
  const control=useRef<()=>void>(()=>{});
  useEffect(()=>{
   const el=canvas.current!,ctx=el.getContext('2d')!,layer=document.createElement('canvas'),lctx=layer.getContext('2d')!;let frame:number|null=null,last=0,previous=0,phase=0,spawn=1000,width=0,height=0,ratio=0,signature='',built=-1e9;
+  const paintOrbit=createOrbitPainter();
   let pool=CORPUS;const cache=new Map<number,Row>();
   const build=()=>{const now=performance.now(),raw=terrain.current.join('\n'),sig=raw.slice(-9000);if(sig===signature||now-built<2000)return;signature=sig;built=now;pool=[...redact(raw).split('\n').map(t=>t.trim()).filter(Boolean).slice(-24),...CORPUS];};
   // A row keeps the text it was born with, so new output only enters at the horizon.
@@ -63,10 +66,10 @@ export function Scene({servers,requests,focus,effects,online,terrain}:{servers:S
    d.addColorStop(0,`rgba(${rgb},${Math.sin(p0*Math.PI)*.8})`);d.addColorStop(1,`rgba(${rgb},0)`);ctx.fillStyle=d;ctx.fillRect(px-6,py-6,12,12);
   };
   const nodes=(v:typeof latest.current,w:number,h:number,t:number,anim:boolean)=>{
-   const prompt=target();
+   const prompt=target(),origin=document.getElementById('orbit-origin')?.getBoundingClientRect();
    v.servers.forEach((s,i)=>{
-    const p=nodePosition(i,v.servers.length),x=30+(w-56)*p.x,y=44+h*p.y,state=nodeState(s,v.requests),selected=s.id===v.focus,live=s.connected||state!=='idle',rgb=COLORS[state==='idle'&&s.connected?'connected':state];
-    if(prompt&&(selected||state==='running'||state==='pending'))link(x,y,prompt,rgb,state==='pending',selected,t,anim,i);
+    const p=nodePosition(i,v.servers.length),x=30+(w-56)*p.x,y=44+h*p.y,state=nodeState(s,v.requests),selected=s.id===v.focus,orbit=v.orbits[s.id],docking=orbit?.outcome==='active',live=s.connected||(!docking&&state!=='idle'),rgb=COLORS[docking?'idle':state==='idle'&&s.connected?'connected':state];
+    if(prompt&&(!orbit||s.id!==v.orbitServer)&&(selected||state==='running'||state==='pending'))link(x,y,prompt,rgb,state==='pending',selected,t,anim,i);
     let g=ctx.createRadialGradient(x,y,0,x,y,48);g.addColorStop(0,'rgba(7,8,10,.7)');g.addColorStop(1,'rgba(7,8,10,0)');ctx.fillStyle=g;ctx.fillRect(x-48,y-48,96,96);
     g=ctx.createRadialGradient(x,y,0,x,y,34);g.addColorStop(0,`rgba(${rgb},${(live?.15:.05)+(state==='pending'?.07*(1+Math.sin(t*2.6)):0)})`);g.addColorStop(1,`rgba(${rgb},0)`);ctx.fillStyle=g;ctx.fillRect(x-34,y-34,68,68);
     ctx.save();ctx.translate(x,y);ctx.rotate(-.3);ctx.lineWidth=.9;
@@ -82,6 +85,7 @@ export function Scene({servers,requests,focus,effects,online,terrain}:{servers:S
     ctx.beginPath();ctx.arc(x,y,2.3,0,Math.PI*2);if(live){ctx.fillStyle=`rgba(${rgb},${flicker})`;ctx.fill();}else{ctx.strokeStyle=`rgba(${rgb},.7)`;ctx.lineWidth=1;ctx.stroke();}
     // Leader into the DOM label, which sits 44px right of the node centre.
     ctx.strokeStyle=`rgba(${rgb},${selected?.6:.32})`;ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(x+19,y);ctx.lineTo(x+40,y);ctx.stroke();
+    if(orbit&&s.id===v.orbitServer&&origin)paintOrbit(ctx,orbit,{x:origin.left+origin.width/2,y:origin.top+origin.height/2},{x,y},t*1000,anim&&!v.reduced&&v.online);
    });
   };
   const draw=(now:number)=>{
@@ -101,6 +105,6 @@ export function Scene({servers,requests,focus,effects,online,terrain}:{servers:S
   resize();sync();window.addEventListener('resize',resize);document.addEventListener('visibilitychange',sync);
   return()=>{if(frame!==null)cancelAnimationFrame(frame);window.removeEventListener('resize',resize);document.removeEventListener('visibilitychange',sync);};
  },[terrain]);
- useEffect(()=>control.current(),[effects,online,servers,requests,focus]);
+ useEffect(()=>control.current(),[effects,online,servers,requests,focus,orbits,orbitServer,reduced]);
  return <canvas id="scene" ref={canvas} aria-hidden="true"/>;
 }

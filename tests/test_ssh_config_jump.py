@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import select
 import shutil
 import socket
@@ -191,13 +192,25 @@ class JumpProtocolTests(unittest.TestCase):
             if host=='internal-target.invalid':raise AssertionError('Target DNS must occur at jump host')
             return original(host,*args,**kwargs)
         with patch('socket.getaddrinfo',side_effect=local_dns):
-            one,events,out=self.run_command(settings);two,_,_=self.run_command(settings)
+            one,events,out=self.run_command(settings);two,reused,_=self.run_command(settings)
         self.assertEqual(0,one.exit_code,one.error);self.assertEqual(0,two.exit_code,two.error)
         self.assertEqual(['jumper','fixture'],[d['username'] for k,d in self.prompts.calls if k=='credentials'])
         self.assertEqual(['jump','target'],[d['role'] for k,d in self.prompts.calls if k=='host_key'])
         self.assertEqual(1,self.first.authentications);self.assertEqual(1,self.target.authentications)
         self.assertEqual([],self.first.commands);self.assertEqual(['pwd','pwd'],self.target.commands)
         self.assertIn('opening_jump_channel',[e.get('phase') for e in events])
+        trace=[e for e in events if 'connection_event' in e]
+        connected=[e for e in trace if e['connection_event']['event']=='connected']
+        self.assertEqual(['jump','target'],[e['connection_context']['role'] for e in connected])
+        self.assertEqual([1,2],[e['connection_context']['hop_index'] for e in connected])
+        target_trace=[e['connection_event']['event'] for e in trace if e['connection_context']['role']=='target']
+        self.assertIn('jump_channel_opened',target_trace)
+        self.assertNotIn('dns_started',target_trace)
+        self.assertNotIn('tcp_connected',target_trace)
+        reuse_events=[e['connection_event']['event'] for e in reused if 'connection_event' in e]
+        self.assertEqual(2,reuse_events.count('connection_reused'))
+        self.assertNotIn('ssh_handshake_started',reuse_events)
+        self.assertNotIn('fixture-jump-password',json.dumps(trace))
         self.assertIn(('internal-target.invalid',self.target.port),self.first.forwarded)
         self.assertTrue(any('完成'.encode() in b for n,b in out))
         self.assertNotIn('fixture-jump-password',Path(self.known).read_text())
@@ -225,10 +238,15 @@ class JumpProtocolTests(unittest.TestCase):
             if kind=='credentials' and data.get('role')=='target':raise PromptCancelled('cancel target')
             return original(kind,data,stop,timeout)
         self.prompts.ask=ask
-        result,_,_=self.run_command(self.settings())
+        result,events,_=self.run_command(self.settings())
         self.assertTrue(result.disconnected);self.assertEqual(1,self.first.authentications)
         self.assertFalse(self.runner.connection_states().get('route',False))
         self.assertFalse(self.target.authentications);self.assertFalse(self.target.commands)
+        trace=[e for e in events if 'connection_event' in e]
+        self.assertEqual('target',trace[-1]['connection_context']['role'])
+        self.assertEqual('connection_cancelled',trace[-1]['connection_event']['event'])
+        self.assertFalse(any(e['connection_context']['role']=='target' and
+                             e['connection_event']['event']=='connected' for e in trace))
 
     def test_wrong_jump_fingerprint_never_prompts_password_or_contacts_target(self):
         key=paramiko.RSAKey.generate(2048)
@@ -278,8 +296,12 @@ class IdentitiesOnlyProtocolTests(unittest.TestCase):
             prompts=Prompts();runner=SSHRunner(prompts);self.addCleanup(runner.close)
             settings=SSHSettings('127.0.0.1','fixture',fixture.port,(str(filename),),(str(root/'known_hosts'),),identities_only=True)
             payload=SimpleNamespace(ssh_settings=settings,remote_command='pwd',timeout_seconds=3)
-            result=runner(payload,lambda *a:None,threading.Event())
+            events=[]
+            result=runner.execute(payload,lambda *a:None,threading.Event(),lambda **v:events.append(v))
             self.assertEqual(0,result.exit_code,result.error);self.assertEqual([key.asbytes()],offered)
             self.assertEqual(1,sum(k=='credentials' for k,d in prompts.calls))
+            trace=[e['connection_event'] for e in events if 'connection_event' in e]
+            self.assertEqual('publickey',trace[-1]['data']['auth_method'])
+            self.assertNotIn('fixture-key-passphrase',json.dumps(trace))
 
 if __name__=='__main__':unittest.main()

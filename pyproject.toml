@@ -1,6 +1,6 @@
 [project]
 name = "ssh-gate"
-version = "0.4.2"
+version = "1.0.0"
 description = "Local SSH access gateway for OpenAI Secure MCP Tunnel"
 requires-python = ">=3.11,<3.14"
 dependencies = [

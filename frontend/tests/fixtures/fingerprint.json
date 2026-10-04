@@ -1,0 +1,16 @@
+{
+  "source": "ssh-keygen -lv -E sha256 (OpenSSH)",
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f orbit-test",
+  "fingerprint": "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA",
+  "rows": [
+    " .oOo=oo  E +.+=+",
+    "  + *.+.   o +.o.",
+    " .   .. . .  .o+ ",
+    "       . . +. ...",
+    "        S =o. .  ",
+    "       o oo..  . ",
+    "        .oo=o .  ",
+    "        oo=oo.   ",
+    "         o.o..   "
+  ]
+}

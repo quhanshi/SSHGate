@@ -912,7 +912,7 @@ wheels = [
 
 [[package]]
 name = "ssh-gate"
-version = "0.4.2"
+version = "1.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },

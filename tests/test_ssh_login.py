@@ -67,8 +67,9 @@ class PasswordServer(paramiko.ServerInterface):
 
 
 class SSHFixture:
-    def __init__(self, server_factory=PasswordServer):
+    def __init__(self, server_factory=PasswordServer, transport_factory=paramiko.Transport):
         self.server_factory = server_factory
+        self.transport_factory = transport_factory
         self.key = paramiko.RSAKey.generate(2048)
         self.commands = []
         self.authentications = 0
@@ -91,7 +92,7 @@ class SSHFixture:
                 continue
             except OSError:
                 break
-            transport = paramiko.Transport(connection)
+            transport = self.transport_factory(connection)
             transport.add_server_key(self.key)
             self.transports.append(transport)
             def handshake(transport=transport):

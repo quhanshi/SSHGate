@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import codecs
+from copy import deepcopy
 import json
 import os
 import posixpath
@@ -22,6 +23,7 @@ from .policies import python_test_command, scope_contains
 from .transfers import TransferStore, safe_name, zip_members
 from .ssh import SSHRunner, SSHSettings, build_remote_command, resolve_settings
 from .credentials import CredentialStore
+from .ssh_trace import MAX_CONNECTION_EVENTS
 
 
 def timestamp() -> str:
@@ -74,6 +76,8 @@ class Request:
     phase: str = "waiting_approval"
     phase_history: list = field(default_factory=list)
     connection_context: dict = field(default_factory=dict)
+    connection_events: list = field(default_factory=list)
+    connection_event_seq: int = 0
     started_monotonic: float | None = None
     ended_monotonic: float | None = None
     last_output_at: str | None = None
@@ -386,6 +390,10 @@ class ApprovalManager:
             "remote_stop_guaranteed": False,
             "phase": request.phase, "phase_history": list(request.phase_history),
             "connection_context": dict(request.connection_context),
+            "connection_trace_version": 1,
+            "connection_events": deepcopy(request.connection_events),
+            "connection_event_seq": request.connection_event_seq,
+            "connection_events_dropped": request.connection_event_seq - len(request.connection_events),
             "last_output_at": request.last_output_at,
             "runtime_seconds": round((request.ended_monotonic or self.clock())-request.started_monotonic,2) if request.started_monotonic is not None else 0,
             "pid": request.pid, "pgid": request.pgid,
@@ -426,6 +434,7 @@ class ApprovalManager:
                      "approved_at": r.approved_at, "finished_at": r.finished_at,
                      "exit_code": r.exit_code, "error": r.error,
                      "output_bytes": len(r.stdout) + len(r.stderr), "phase": r.phase,
+                     "connection_event_seq": r.connection_event_seq,
                      "operation": r.payload.operation,"last_output_at":r.last_output_at,
                      "pid":r.pid,"pgid":r.pgid,"progress_bytes":r.progress_bytes,
                      "runtime_seconds": round((r.ended_monotonic or self.clock())-r.started_monotonic,1) if r.started_monotonic is not None else 0,
@@ -551,7 +560,15 @@ class ApprovalManager:
                     request.output_truncated = True
         def progress(**values):
             with self._lock:
+                if request.status != "running":
+                    return
                 context = values.get("connection_context", request.connection_context)
+                if "connection_event" in values:
+                    request.connection_event_seq += 1
+                    request.connection_events.append({**deepcopy(values["connection_event"]),
+                                                      "seq": request.connection_event_seq,
+                                                      "connection_context": dict(context)})
+                    del request.connection_events[:-MAX_CONNECTION_EVENTS]
                 if "phase" in values:
                     phase=values["phase"]
                     if request.phase != phase or request.connection_context != context:

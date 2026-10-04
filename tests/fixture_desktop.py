@@ -181,14 +181,14 @@ class FixtureWindow:
         return (self.path,)
 
 
-def make_fixture(root: Path, seed=False):
+def make_fixture(root: Path, seed=False, runner_factory=FixtureRunner):
     values = {"listen_port": 18765, "auto_allow_readonly": True, "servers": [
         {"id": "dev", "label": "开发服务器", "ssh_target": "fixture@dev.fixture", "default_cwd": "/home/fixture/workspace"},
         {"id": "logs", "label": "日志节点", "ssh_target": "fixture@logs.fixture", "default_cwd": "/var/log", "port": 2222},
         {"id": "stage", "label": "验证环境", "ssh_target": "fixture@stage.fixture", "default_cwd": "/srv/app"}],
         "tunnel": {"id": "", "client_path": "bin/tunnel-client.exe", "health_port": 18766}}
     (root / "config.json").write_text(json.dumps(values, ensure_ascii=False))
-    runner = FixtureRunner(root / "credentials")
+    runner = runner_factory(root / "credentials")
     manager = ApprovalManager(load_config(root / "config.json"), runner=runner)
     runner.transfers=manager.transfers
     host, tunnel = FixtureHost(manager), FixtureTunnel()

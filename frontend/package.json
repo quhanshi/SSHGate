@@ -1,6 +1,6 @@
 {
   "name": "ssh-gate-ui", "version": "1.0.0", "private": true, "type": "module",
-  "scripts": {"dev": "vite --host 127.0.0.1", "build": "tsc --noEmit && node build.mjs", "test": "node --experimental-strip-types --test tests/*.test.ts", "test:ui": "node ../tests/ui_react_e2e.cjs"},
+  "scripts": {"dev": "vite --host 127.0.0.1", "build": "tsc --noEmit && node build.mjs", "test": "node --experimental-strip-types --test tests/*.test.ts", "test:ui": "node ../tests/ui_react_e2e.cjs", "test:orbit": "node ../tests/ui_orbit_e2e.cjs"},
   "dependencies": {"react": "19.3.0", "react-dom": "19.3.0"},
   "devDependencies": {"@types/react": "^19.2.0", "@types/react-dom": "^19.2.0", "typescript": "5.9.3", "vite": "7.3.1", "playwright": "1.58.2"}
 }
