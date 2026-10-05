@@ -66,7 +66,7 @@ export function Scene({servers,requests,focus,effects,online,terrain,orbits,orbi
    d.addColorStop(0,`rgba(${rgb},${Math.sin(p0*Math.PI)*.8})`);d.addColorStop(1,`rgba(${rgb},0)`);ctx.fillStyle=d;ctx.fillRect(px-6,py-6,12,12);
   };
   const nodes=(v:typeof latest.current,w:number,h:number,t:number,anim:boolean)=>{
-   const prompt=target(),origin=document.getElementById('orbit-origin')?.getBoundingClientRect();
+   const prompt=target(),origin=document.getElementById('orbit-origin')?.getBoundingClientRect(),panel=document.querySelector('.orbit-panel')?.getBoundingClientRect();
    v.servers.forEach((s,i)=>{
     const p=nodePosition(i,v.servers.length),x=30+(w-56)*p.x,y=44+h*p.y,state=nodeState(s,v.requests),selected=s.id===v.focus,orbit=v.orbits[s.id],docking=orbit?.outcome==='active',live=s.connected||(!docking&&state!=='idle'),rgb=COLORS[docking?'idle':state==='idle'&&s.connected?'connected':state];
     if(prompt&&(!orbit||s.id!==v.orbitServer)&&(selected||state==='running'||state==='pending'))link(x,y,prompt,rgb,state==='pending',selected,t,anim,i);
@@ -85,7 +85,7 @@ export function Scene({servers,requests,focus,effects,online,terrain,orbits,orbi
     ctx.beginPath();ctx.arc(x,y,2.3,0,Math.PI*2);if(live){ctx.fillStyle=`rgba(${rgb},${flicker})`;ctx.fill();}else{ctx.strokeStyle=`rgba(${rgb},.7)`;ctx.lineWidth=1;ctx.stroke();}
     // Leader into the DOM label, which sits 44px right of the node centre.
     ctx.strokeStyle=`rgba(${rgb},${selected?.6:.32})`;ctx.lineWidth=.8;ctx.beginPath();ctx.moveTo(x+19,y);ctx.lineTo(x+40,y);ctx.stroke();
-    if(orbit&&s.id===v.orbitServer&&origin)paintOrbit(ctx,orbit,{x:origin.left+origin.width/2,y:origin.top+origin.height/2},{x,y},t*1000,anim&&!v.reduced&&v.online);
+    if(orbit&&s.id===v.orbitServer&&origin)paintOrbit(ctx,orbit,{x:origin.left+origin.width/2,y:origin.top+origin.height/2},{x,y},t*1000,{animate:anim&&!v.reduced&&v.online,live:anim&&v.online,panel});
    });
   };
   const draw=(now:number)=>{
