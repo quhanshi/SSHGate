@@ -1,8 +1,9 @@
 import {useCallback,useEffect,useRef,useState} from 'react';
 import {api} from './api';
 import {active,clean,statusLabels} from './utils';
+import {connectedRecord} from './connection';
 import type {Line,RequestDetail,RequestSummary,Snapshot} from './types';
-interface Cursor {out:number;err:number;signature:string;started:boolean;finished:boolean;progress:number;partial:Record<string,number|null>;key:Record<string,boolean>}
+interface Cursor {out:number;err:number;signature:string;started:boolean;finished:boolean;progress:number;events:number;partial:Record<string,number|null>;key:Record<string,boolean>}
 export function useDesktop(){
  const [data,setData]=useState<Snapshot|null>(null),[online,setOnline]=useState(false),[error,setError]=useState('');
  const [lines,setLines]=useState<Line[]>([]),[details,setDetails]=useState<Record<string,RequestDetail>>({});
@@ -44,7 +45,7 @@ export function useDesktop(){
    let budget=12;
    for(const r of candidates){
     let c=cursor.current.get(r.request_id);
-    if(!c){c={out:0,err:0,signature:'',started:false,finished:false,progress:-1,partial:{out:null,err:null},key:{out:false,err:false}};cursor.current.set(r.request_id,c);}
+    if(!c){c={out:0,err:0,signature:'',started:false,finished:false,progress:-1,events:0,partial:{out:null,err:null},key:{out:false,err:false}};cursor.current.set(r.request_id,c);}
     const signature=[r.status,r.output_bytes,r.phase,r.progress_bytes,r.connection_event_seq].join('|');
     const cached=detailRef.current[r.request_id];const unread=cached&&(c.out<cached.stdout_length||c.err<cached.stderr_length);
     if(c.signature===signature&&!unread)continue;
@@ -55,6 +56,8 @@ export function useDesktop(){
      detailRef.current[r.request_id]=d;c.signature=signature;
      if(!c.started){push(r,'cmd',d.command);terrain.current.push(d.command);c.started=true;}
      const bulk=d.stdout_length+d.stderr_length>4000||d.stdout.split('\n').length+d.stderr.split('\n').length>40;
+     // A new SSH connection folds into one log line before its output; reuse adds nothing.
+     for(const e of d.connection_events||[]){if(e.seq<=c.events)continue;c.events=e.seq;if(e.event==='connected'&&e.connection_context.role==='target')push(r,'ok',connectedRecord(e),!bulk);}
      for(const stream of ['out','err'] as const){
       const field=stream==='out'?'stdout':'stderr',length=d[field+'_length' as 'stdout_length'|'stderr_length'];
       if(c[stream]>=length)continue;

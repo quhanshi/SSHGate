@@ -35,7 +35,7 @@ export function Gate({requests,details,selected,onSelect,open,onToggle,onReject,
  const anyRunning=requests.some(r=>r.status==='running');
  useEffect(()=>{if(selected)listRef.current?.querySelector(`[data-request-id="${CSS.escape(selected)}"]`)?.scrollIntoView({block:'nearest'});},[selected]);
  return <aside className={'gate '+(open?'open':'')} id="gate" aria-label="请求审批">
-  <button className="gate-rail" id="gate-rail" onClick={()=>onToggle(true)} aria-label="展开请求审批"><span>审批</span><b id="gate-rail-count">{pending.length}</b></button>
+  <button className="gate-rail" id="gate-rail" onClick={()=>onToggle(true)} aria-label="展开请求审批"><span>审批</span><b id="gate-rail-count" data-count={pending.length}>{pending.length}</b></button>
   <div className="gate-head"><div><h2>请求审批</h2><span id="gate-count">{pending.length?`${pending.length} 条请求等待审批`:'没有待审请求'}</span></div><button className="icon-button gate-collapse" id="gate-collapse" onClick={()=>onToggle(false)} aria-label="收起请求审批">×</button></div>
   <div className="gate-list" id="gate-list" ref={listRef}>{pending.length?pending.map(r=>{
    const d=details[r.request_id],kind=risk(d||r),progress=hold.holding?.id===r.request_id?hold.holding.progress:0,loading=!d;

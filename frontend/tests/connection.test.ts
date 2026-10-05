@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {deriveOrbit,orbitElapsed,orbitTitle,eventNote} from '../src/connection.ts';
+import {connectedRecord,deriveOrbit,encryptedSeqs,hostKeyLabel,orbitElapsed,orbitTitle,eventNote} from '../src/connection.ts';
+import {hopSpan,orbitCurve} from '../src/orbitPath.ts';
 import type {ConnectionEvent} from '../src/connection.ts';
 import type {RequestDetail,RequestSummary} from '../src/types.ts';
 import {fingerprintArt} from '../src/fingerprint.ts';
@@ -64,4 +65,61 @@ test('a failed post-SSH diagnostic preserves the successful SSH outcome',()=>{
 test('display metadata is allowlisted even when future events gain sensitive fields',()=>{
  const note=eventNote(event(1,'authentication_method_started','authentication',{method:'password',secret:'DO_NOT_DISPLAY',password:'DO_NOT_DISPLAY'}));
  assert.equal(note,'method=password');
+});
+test('host key mismatch and rejection are distinct from an untrusted pending key',()=>{
+ const key=event(1,'host_key_received','host_key',{fingerprint:'SHA256:new',key_type:'ssh-ed25519'});
+ assert.equal(derive([key]).hostKey,'pending');assert.equal(hostKeyLabel(derive([key])),'尚未信任');
+ const mismatch=derive([key,event(2,'connection_failed','host_key',{code:'host_key_mismatch',expected_fingerprint:'SHA256:old'})]);
+ assert.equal(mismatch.hostKey,'mismatch');assert.equal(mismatch.trusted,false);assert.equal(hostKeyLabel(mismatch),'与已保存记录不符');
+ assert.equal(derive([key,event(2,'connection_failed','host_key',{code:'host_key_rejected'})]).hostKey,'rejected');
+ assert.equal(derive([key,event(2,'connection_failed','host_key',{code:'timeout'})]).hostKey,'incomplete');
+});
+test('trust source is reported only after verification',()=>{
+ const o=derive([event(1,'host_key_received','host_key'),event(2,'host_key_verified','host_key',{source:'known_hosts'})]);
+ assert.equal(o.hostKey,'verified');assert.equal(o.trustSource,'known_hosts');assert.match(hostKeyLabel(o),/known_hosts/);
+});
+test('key exchange completes and the cable seals only after the transport is encrypted',()=>{
+ let o=derive([event(1,'banner_received','ssh_banner'),event(2,'algorithms_negotiated','key_exchange',{kex:'curve25519-sha256'})]);
+ assert.equal(o.encrypted,false);assert.equal(o.completed.has('key_exchange'),false);
+ o=derive([event(1,'algorithms_negotiated','key_exchange'),event(2,'host_key_received','host_key')]);
+ assert.equal(o.encrypted,true);assert.equal(o.completed.has('key_exchange'),true);
+ const retry={...event(3,'attempt_started','connecting'),attempt:2};
+ assert.equal(derive([event(1,'host_key_received','host_key'),retry]).encrypted,false);
+ assert.deepEqual([...encryptedSeqs([event(1,'tcp_started'),event(2,'host_key_received','host_key'),event(3,'authenticated','authentication'),retry])],[2,3]);
+});
+test('authentication methods keep their real order and outcome',()=>{
+ const o=derive([event(1,'authentication_method_started','authentication',{method:'publickey'}),event(2,'authentication_method_failed','authentication',{method:'publickey'}),
+  event(3,'authentication_method_started','authentication',{method:'publickey'}),event(4,'authentication_method_failed','authentication',{method:'publickey'}),
+  event(5,'authentication_method_started','authentication',{method:'password'}),event(6,'authenticated','authentication',{method:'password'})]);
+ assert.deepEqual(o.auth,[{method:'publickey',status:'failed',count:2},{method:'password',status:'ok',count:1}]);
+});
+test('a credential prompt before a retry does not advance the cable',()=>{
+ const retry=(seq:number,name:string,stage:string)=>({...event(seq,name,stage),attempt:2});
+ assert.equal(derive([retry(1,'attempt_started','connecting'),retry(2,'credentials_required','authentication')]).cable,.04);
+ assert.equal(derive([retry(1,'attempt_started','connecting'),retry(2,'tcp_started','tcp'),retry(3,'authentication_started','authentication')]).cable,.95);
+});
+test('jump aliases come from observed jump events',()=>{
+ const jump={...event(1,'connected','connected'),connection_context:{...context,role:'jump' as const,host_alias:'bastion',hop_count:2}};
+ const target={...event(2,'jump_channel_started'),connection_context:{...context,hop_index:2,hop_count:2,via_host_alias:'bastion'}};
+ assert.deepEqual(derive([jump,target]).jumps,['bastion']);
+});
+test('jump and proxy routes resolve names remotely and never tick a local DNS step',()=>{
+ const hop={...context,hop_index:2,hop_count:2,via_host_alias:'bastion'};
+ const jump=derive([{...event(1,'jump_channel_started'),connection_context:hop}]);
+ assert.equal(jump.resolver,'jump');assert(!jump.completed.has('dns'));
+ const proxy=derive([event(1,'proxy_started','proxy'),event(2,'proxy_process_started','proxy'),event(3,'banner_received','ssh_banner')]);
+ assert.equal(proxy.resolver,'proxy');assert(!proxy.completed.has('dns'));assert(proxy.completed.has('tcp'));
+ assert.equal(derive([event(1,'dns_started','dns')]).resolver,'local');
+});
+test('the connected log record carries only real summary fields',()=>{
+ assert.equal(connectedRecord({...event(1,'connected','connected',{key_type:'ssh-ed25519',cipher_out:'aes128-ctr',auth_method:'publickey'}),elapsed_ms:1240}),'SSH 已连接 · 1.24s · ssh-ed25519 · aes128-ctr · publickey');
+ assert.equal(connectedRecord({...event(1,'connected','connected'),elapsed_ms:80}),'SSH 已连接 · 0.08s');
+});
+test('cable progress starts where the path leaves the covering panel',()=>{
+ const start={x:40,y:840},end={x:1000,y:150},panel={left:30,top:540,right:670,bottom:850};
+ const {point,visible}=orbitCurve(start,end,panel);
+ assert(visible>.3&&visible<.9);const q=point(visible);assert(!(q.x<=panel.right&&q.y>=panel.top));
+ assert.equal(orbitCurve(start,end).visible,0);
+ const two=hopSpan(visible,2,2);assert.equal(two.from,visible+(1-visible)/2);assert.equal(two.to,1);
+ const clamped=hopSpan(0,5,2);assert.equal(clamped.h,2);assert.equal(clamped.to,1);
 });

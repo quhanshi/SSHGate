@@ -23,15 +23,43 @@ const eventLabels:Record<string,string>={
 };
 export function eventLabel(e:ConnectionEvent){return e.event==='connection_failed'?(failureLabels[String(e.data.code)]||'连接失败'):eventLabels[e.event]||e.event;}
 // Deliberately allowlist display metadata: new backend fields never appear by accident.
-export function eventNote(e:ConnectionEvent){return ['address','port','server_version','kex','host_key_algorithm','cipher_out','cipher_in','fingerprint','method','source','code'].filter(k=>e.data[k]!==undefined).map(k=>`${k}=${e.data[k]}`).join(' · ');}
+const noteKeys=['address','port','address_count','client_version','server_version','kex','host_key_algorithm','cipher_out','cipher_in','mac_out','mac_in','compression_out','compression_in','key_type','fingerprint','expected_fingerprint','method','source','code'];
+export function eventNote(e:ConnectionEvent){return noteKeys.filter(k=>e.data[k]!==undefined&&e.data[k]!==null).map(k=>`${k}=${e.data[k]}`).join(' · ');}
+export type HostKeyState='verified'|'pending'|'incomplete'|'mismatch'|'rejected';
+export interface AuthStep {method:string;status:'trying'|'failed'|'partial'|'ok';count:number}
 export interface OrbitState {
  request:RequestSummary; events:ConnectionEvent[]; last:ConnectionEvent; context:ConnectionContext;
  attempt:number; stage:OrbitStage; outcome:'active'|'connected'|'reused'|'failed'|'cancelled';
  metadata:Record<string,string|number|boolean|null>; trusted:boolean; completed:Set<OrbitStage>;
  cable:number; code:string; dropped:number; waitingForTarget:boolean;
+ encrypted:boolean; hostKey:HostKeyState; trustSource:string; auth:AuthStep[]; jumps:string[];
+ resolver:'local'|'jump'|'proxy';
 }
-const completion:Record<string,OrbitStage>={dns_resolved:'dns',tcp_connected:'tcp',jump_channel_opened:'tcp',banner_received:'ssh_banner',algorithms_negotiated:'key_exchange',host_key_verified:'host_key',authenticated:'authentication',connected:'connected'};
+const completion:Record<string,OrbitStage>={dns_resolved:'dns',tcp_connected:'tcp',jump_channel_opened:'tcp',banner_received:'ssh_banner',host_key_verified:'host_key',authenticated:'authentication',connected:'connected'};
 const cableAt:Record<string,number>={connecting:.04,dns:.12,tcp:.44,proxy:.44,ssh_banner:.64,key_exchange:.77,host_key:.87,authentication:.95,connected:1};
+// Paramiko reports the host key only after NEWKEYS, so these events imply an encrypted transport.
+const sealedEvents=new Set(['host_key_received','host_key_confirmation_required','host_key_verified','authentication_started','authentication_method_started','authenticated','connected']);
+// Retries can ask for credentials before any network activity; that wait is not a reached handshake stage.
+const networkEvents=new Set(['dns_started','tcp_started','jump_channel_started','proxy_started','ssh_handshake_started']);
+// Events observed on an already encrypted transport, per hop and attempt.
+export function encryptedSeqs(events:ConnectionEvent[]){
+ const sealed=new Set<string>(),seqs=new Set<number>();
+ for(const e of events){const k=e.connection_context.hop_index+':'+e.attempt;if(sealedEvents.has(e.event)||e.event==='connection_reused')sealed.add(k);if(sealed.has(k))seqs.add(e.seq);}
+ return seqs;
+}
+function authSteps(events:ConnectionEvent[]){
+ const steps:AuthStep[]=[];
+ for(const e of events){
+  const method=String(e.data.method||'');
+  if(e.event==='authentication_method_started')steps.push({method,status:'trying',count:1});
+  else if(e.event==='authentication_method_failed'||e.event==='authentication_partial'||e.event==='authenticated'){
+   const step=[...steps].reverse().find(s=>s.status==='trying'&&s.method===method);
+   if(step)step.status=e.event==='authenticated'?'ok':e.event==='authentication_partial'?'partial':'failed';
+  }
+ }
+ // SSHClient offers each key separately; repeated identical outcomes read as one line with a count.
+ return steps.reduce<AuthStep[]>((all,s)=>{const prev=all.at(-1);if(prev&&prev.method===s.method&&prev.status===s.status)prev.count++;else all.push({...s});return all;},[]);
+}
 export function deriveOrbit(request:RequestSummary,detail:RequestDetail|undefined):OrbitState|null {
  if(!detail?.connection_events?.length)return null;
  const events=[...new Map(detail.connection_events.map(e=>[e.seq,e])).values()].sort((a,b)=>a.seq-b.seq),last=events.at(-1)!;
@@ -49,9 +77,22 @@ export function deriveOrbit(request:RequestSummary,detail:RequestDetail|undefine
  }
  const stage=orbitStages.includes(last.stage as OrbitStage)?last.stage as OrbitStage:last.stage==='proxy'?'tcp':'dns';
  const completed=new Set(current.map(e=>completion[e.event]).filter(Boolean));
+ // KEXINIT only selects algorithms; the exchange is complete once the transport is sealed.
+ const sealed=current.some(e=>sealedEvents.has(e.event));if(sealed)completed.add('key_exchange');
+ // A ProxyCommand reports no TCP step of its own; a received banner proves the byte stream.
+ if(completed.has('ssh_banner'))completed.add('tcp');
+ // Over a jump channel or a ProxyCommand the name is resolved elsewhere; no local DNS step is ever observed.
+ const resolver=context.via_host_alias||current.some(e=>e.event==='jump_channel_started')?'jump':current.some(e=>e.stage==='proxy')?'proxy':'local';
  const trusted=current.some(e=>e.event==='host_key_verified'||e.event==='connection_reused'||e.event==='connected');
+ const failed=outcome==='failed';
+ const hostKey:HostKeyState=failed&&code==='host_key_mismatch'?'mismatch':failed&&code==='host_key_rejected'?'rejected':trusted?'verified':outcome==='active'?'pending':'incomplete';
+ const verified=[...current].reverse().find(e=>e.event==='host_key_verified');
+ // Indexed by hop_index - 1; a gap stays empty when early events were dropped.
+ const jumps:string[]=[];for(const e of events)if(e.connection_context.role==='jump')jumps[e.connection_context.hop_index-1]=e.connection_context.host_alias||e.connection_context.hostname;
+ const cable=!current.some(e=>networkEvents.has(e.event))&&last.stage==='authentication'?cableAt.connecting:cableAt[last.stage]??.04;
  return {request,events,last,context,attempt,stage,outcome,metadata,trusted,completed,code,dropped:detail.connection_events_dropped||0,
-  cable:cableAt[last.stage]??.04,waitingForTarget:context.role==='jump'&&(connected||reused)};
+  cable,waitingForTarget:context.role==='jump'&&(connected||reused),
+  encrypted:reused||sealed,hostKey,trustSource:String(verified?.data.source||''),auth:authSteps(current),jumps,resolver};
 }
 export function connectionOrbits(requests:RequestSummary[],details:Record<string,RequestDetail>){
  const result:Record<string,OrbitState>={};
@@ -72,3 +113,11 @@ export function orbitElapsed(o:OrbitState,now:number,online:boolean){
  const at=Date.parse(o.last.at);
  return Math.max(0,o.last.elapsed_ms+(o.outcome==='active'&&online&&Number.isFinite(at)?Math.max(0,now-at):0));
 }
+const trustLabels:Record<string,string>={known_hosts:'known_hosts 记录',session:'本次会话已信任',user_once:'本次信任',user_saved:'已信任并保存'};
+export function hostKeyLabel(o:OrbitState){
+ if(o.hostKey==='verified')return o.trustSource?`已核验 · ${trustLabels[o.trustSource]||o.trustSource}`:'已核验';
+ return {pending:'尚未信任',incomplete:'未完成核验',mismatch:'与已保存记录不符',rejected:'已拒绝信任'}[o.hostKey];
+}
+// "SSH-2.0-OpenSSH_9.9" → "OpenSSH_9.9"; anything unexpected is shown as received.
+export function softwareVersion(value:unknown){return String(value||'').replace(/^SSH-[\d.]+-/,'');}
+export function connectedRecord(e:ConnectionEvent){return ['SSH 已连接',(e.elapsed_ms/1000).toFixed(2)+'s',e.data.key_type,e.data.cipher_out,e.data.auth_method].filter(Boolean).join(' · ');}

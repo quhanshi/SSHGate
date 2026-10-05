@@ -148,8 +148,8 @@ kbd{font:calc(11px * var(--font-scale)) var(--mono);border:1px solid var(--line)
 @media(max-width:1279px){
   :root{--gate-w:46px}
   .gate:not(.open) .gate-head,.gate:not(.open) .gate-list,.gate:not(.open) .gate-keys{display:none}
-  .gate:not(.open) .gate-rail{display:flex;flex-direction:column;align-items:center;gap:8px;padding-top:16px;width:100%;background:none;border:0;color:var(--muted);font-size:calc(12.5px * var(--font-scale));writing-mode:vertical-rl;letter-spacing:.3em}
-  .gate-rail b{writing-mode:horizontal-tb;font:calc(12.5px * var(--font-scale)) var(--mono);color:var(--amber)}
+  .gate:not(.open) .gate-rail{display:flex;flex-direction:row;align-items:center;gap:8px;padding-top:16px;width:100%;background:none;border:0;color:var(--muted);font-size:calc(12.5px * var(--font-scale));writing-mode:vertical-rl;letter-spacing:.3em}
+  .gate-rail b{writing-mode:horizontal-tb;font:calc(12.5px * var(--font-scale)) var(--mono);color:var(--amber)}.gate-rail b[data-count="0"]{color:var(--dim)}
   .gate.open{position:absolute;right:0;top:0;bottom:0;width:330px;z-index:20;background:#0a0d11f5}
   .gate.open .gate-collapse{display:inline-flex}
   .hud-id #app-version{display:none}
