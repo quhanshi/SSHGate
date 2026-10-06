@@ -4,6 +4,7 @@ import hashlib
 import codecs
 from copy import deepcopy
 import json
+import ntpath
 import os
 import posixpath
 import re
@@ -25,6 +26,9 @@ from .ssh import SSHRunner, SSHSettings, build_remote_command, resolve_settings
 from .credentials import CredentialStore
 from .ssh_trace import MAX_CONNECTION_EVENTS
 from .authorizations import Grant, CAPABILITY_LABELS, grant_arguments, preauthorized
+from .local_machine import LocalRunner, build_script, launch_description, local_settings
+from .local_terminal import find_shell
+from .winpath import ps_quote, windows_path, within
 
 
 def timestamp() -> str:
@@ -53,6 +57,8 @@ class Payload:
     session_id: str = ""
     grant_id: str = ""
     github_hosts: tuple[str, ...] = ()
+    workspace_roots: tuple[str, ...] = ()  # set only for the local Windows target
+    local_shell: str = ""
 
     def digest(self) -> str:
         raw = json.dumps(asdict(self), ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -97,7 +103,7 @@ class ApprovalManager:
     """Admission uses the local policy or a local GUI approval, never a remote approval tool."""
 
     def __init__(self, config: Config, *, runner=None, audit_path: Path | None = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, local_runner=None):
         self.config = config
         self.runner = runner if runner is not None else SSHRunner(credentials=CredentialStore())
         self.audit_path = audit_path or config.root / "logs/audit.jsonl"
@@ -114,6 +120,7 @@ class ApprovalManager:
         self.server_info: dict[str, dict] = {}
         self._job_secret = secrets.token_bytes(32)
         self.grants: dict[str, Grant] = {}
+        self.local_runner = local_runner if local_runner is not None else LocalRunner(self.transfers)
         if isinstance(self.runner, SSHRunner):
             self.runner.transfers = self.transfers
             self.runner.execution_authorizer = self.check_execution_authorization
@@ -202,6 +209,34 @@ class ApprovalManager:
             raise ValueError("请求不存在或后端已重启；旧审批不会恢复")
         return self._requests[request_id]
 
+    @staticmethod
+    def _workspace_path(server: Server, value, label: str) -> str:
+        path = windows_path(value or server.default_cwd, server.default_cwd, label)
+        if not within(path, server.workspace_roots):
+            raise ValueError(f"{label}不在本机工作区内：{path}")
+        return path
+
+    @staticmethod
+    def _local_shell() -> str:
+        shell = find_shell()
+        if not shell:
+            raise ValueError("未找到 PowerShell，无法在本机执行命令")
+        return shell.path
+
+    def _submit_local(self, server, command, reason, client_request_id, cwd, timeout_seconds, session_id, session_revision, grant_id):
+        if grant_id:
+            raise ValueError("本机命令不适用临时授权，每条命令都需要本地审批")
+        cwd = self._workspace_path(server, cwd, "工作目录")
+        shell = self._local_shell()
+        # Every local command is reviewed by a person: PowerShell can reach paths outside the workspace.
+        payload = Payload(server.id, server.label, "", command, cwd, reason, timeout_seconds, launch_description(shell),
+                          local_settings(server), build_script(command, cwd), False,
+                          "本机 PowerShell 以当前 Windows 用户权限运行，可访问工作区以外的路径；每条命令都需本地审批",
+                          arguments=json.dumps({"session_revision": session_revision}) if session_id else "{}",
+                          policy_category="local_command", session_id=session_id,
+                          workspace_roots=server.workspace_roots, local_shell=shell)
+        return self._admit(payload, client_request_id)
+
     def submit(self, server_id: str, command: str, reason: str, client_request_id: str,
                cwd: str = "", timeout_seconds: int = 300, *, session_id: str = "", session_revision: int = 0,
                grant_id: str = "") -> dict:
@@ -212,10 +247,13 @@ class ApprovalManager:
             raise ValueError("命令最多 32 KiB，执行目的最多 2000 字符")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", client_request_id):
             raise ValueError("client_request_id 需要 1–80 个字母、数字或 . _ : -")
+        integer(timeout_seconds, 1, self.config.max_command_timeout_seconds, "执行时限")
+        if server.kind == "local":
+            return self._submit_local(server, command, reason, client_request_id, cwd, timeout_seconds,
+                                      session_id, session_revision, grant_id)
         cwd = checked_text(cwd or server.default_cwd, "工作目录")
         if not (cwd in {".", "~"} or cwd.startswith("~/") or cwd.startswith("/")):
             raise ValueError("工作目录必须是绝对路径、~、~/子目录或 .")
-        integer(timeout_seconds, 1, self.config.max_command_timeout_seconds, "执行时限")
         decision = readonly_command(command)
         if not decision.allowed and "python_tests" in server.auto_categories and scope_contains(cwd, server.auto_roots):
             decision = python_test_command(command)
@@ -274,7 +312,8 @@ class ApprovalManager:
 
     def _server_binding(self, server_id: str) -> str:
         server = self.config.server(server_id)
-        raw = json.dumps({"server": asdict(server), "ssh": asdict(resolve_settings(self.config, server))},
+        settings = local_settings(server) if server.kind == "local" else resolve_settings(self.config, server)
+        raw = json.dumps({"server": asdict(server), "ssh": asdict(settings)},
                          sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -297,6 +336,8 @@ class ApprovalManager:
                               ttl_seconds=1800, max_uses=50, exact_commands=None,
                               max_timeout_seconds=300, git_remote="origin", git_branch="main") -> dict:
         server = self.config.server(server_id)
+        if server.kind == "local":
+            raise ValueError("本机工作区不支持临时授权；文件读取按本地策略放行，命令逐条审批")
         arguments = grant_arguments(repo_path, capabilities, exact_commands or [], ttl_seconds,
                                     max_uses, max_timeout_seconds, git_remote, git_branch)
         integer(max_timeout_seconds, 1, self.config.max_command_timeout_seconds, "单次执行时限")
@@ -394,13 +435,21 @@ class ApprovalManager:
             integer(args.get("max_depth",8),0,32,"搜索深度")
             integer(args.get("limit",100),1,200,"匹配数量")
         if "overwrite" in args and type(args["overwrite"]) is not bool: raise ValueError("覆盖选项必须为布尔值")
-        path=checked_text(args.get("path",server.default_cwd),"远程路径")
+        local=server.kind=="local"
+        if local:
+            if operation=="inspect_repository": raise ValueError("本机工作区不提供 Git 远端核验；请在本机终端中检查")
+            if operation=="find_files" and "\\" in args["pattern"]: raise ValueError("搜索模式只匹配文件名")
+            path=self._workspace_path(server,args.get("path",""),"本机路径")
+        else:
+            path=checked_text(args.get("path",server.default_cwd),"远程路径")
         if len(path)>4096: raise ValueError("路径过长")
         args["path"]=path
-        category="diagnostics" if operation=="test_connection" else "git_read" if operation=="inspect_repository" else "read_fs"
+        # The local check only stats workspace directories, so it shares the file-read policy.
+        category="read_fs" if local or operation not in {"test_connection","inspect_repository"} else "diagnostics" if operation=="test_connection" else "git_read"
         eligible=operation not in {"upload_file","upload_directory","create_session","update_session"}
         eligible=eligible and (not server.auto_categories or category in server.auto_categories)
-        roots=server.auto_roots if eligible else ()
+        # Local reads stay inside the workspace by construction; the runner re-resolves links at execution.
+        roots=server.auto_roots if eligible and not local else ()
         # Bound filesystem reads by the actual normalized target at execution.
         if roots and not scope_contains(path,roots): eligible=False
         if not eligible: roots=()
@@ -413,7 +462,7 @@ class ApprovalManager:
                 tid=json.loads(old.payload.arguments).get("transfer_id","")
                 args["transfer_id"]=tid
             elif operation in {"download_file","download_directory"}:
-                filename=posixpath.basename(path.rstrip("/")) or "root"
+                filename=(ntpath.basename(path.rstrip("\\")).rstrip(":") if local else posixpath.basename(path.rstrip("/"))) or "root"
                 filename=safe_name(filename+(".zip" if operation=="download_directory" else ""))
                 tid=self.transfers.reserve_download(filename)["transfer_id"]
                 args["transfer_id"]=tid; reserved=True
@@ -424,11 +473,17 @@ class ApprovalManager:
                 if operation=="upload_directory": zip_members(self.transfers.path(tid,complete=True))
                 if not existing: self.transfers.lease(tid); leased=True
             raw=json.dumps(args,ensure_ascii=False,sort_keys=True)
-            payload=Payload(server.id,server.label,server.ssh_target,operation+" "+raw,
-                            server.default_cwd,reason,timeout_seconds,"SFTP / "+operation,
-                            resolve_settings(self.config,server),operation,eligible,
-                            "结构化 SFTP 操作；上传/会话上下文变更需本地审批",operation,raw,
-                            policy_category=category,policy_roots=tuple(roots),github_hosts=server.github_hosts)
+            if local:
+                payload=Payload(server.id,server.label,"",operation+" "+raw,server.default_cwd,reason,timeout_seconds,
+                                "本机文件 / "+operation,local_settings(server),operation,eligible,
+                                "本机工作区文件操作；实际路径经符号链接与目录联接解析后仍须位于工作区内；上传/会话变更需本地审批",
+                                operation,raw,policy_category=category,workspace_roots=server.workspace_roots)
+            else:
+                payload=Payload(server.id,server.label,server.ssh_target,operation+" "+raw,
+                                server.default_cwd,reason,timeout_seconds,"SFTP / "+operation,
+                                resolve_settings(self.config,server),operation,eligible,
+                                "结构化 SFTP 操作；上传/会话上下文变更需本地审批",operation,raw,
+                                policy_category=category,policy_roots=tuple(roots),github_hosts=server.github_hosts)
             try: return self._admit(payload,client_request_id)
             except BaseException:
                 if leased: self.transfers.release(tid)
@@ -467,7 +522,10 @@ class ApprovalManager:
             environment=session["environment"]
             if grant_id and environment:
                 raise ValueError("含自定义环境变量的会话命令需要逐次审批，不适用临时授权")
-            script="".join("export "+k+"="+shlex.quote(v)+"\n" for k,v in sorted(environment.items()))+command
+            if self.config.server(session["server_id"]).kind=="local":
+                script="".join("$env:"+k+" = "+ps_quote(v)+"\n" for k,v in sorted(environment.items()))+command
+            else:
+                script="".join("export "+k+"="+shlex.quote(v)+"\n" for k,v in sorted(environment.items()))+command
             # All exports are literal and part of the reviewed digest. A shell process is never reused.
             view=self.submit(session["server_id"],script,reason,client_request_id,session["cwd"],timeout_seconds,session_id=session_id,session_revision=session["revision"],grant_id=grant_id)
             return {**view,"session_id":session_id,"session_revision":session["revision"]}
@@ -748,10 +806,11 @@ class ApprovalManager:
                     if key in values: setattr(request,key,values[key])
         try:
             self.check_execution_authorization(request.payload)
-            if hasattr(self.runner,"execute"):
-                result = self.runner.execute(request.payload,emit,request.stop,progress)
+            runner = self.local_runner if request.payload.workspace_roots else self.runner
+            if hasattr(runner,"execute"):
+                result = runner.execute(request.payload,emit,request.stop,progress)
             else:
-                result = self.runner(request.payload, emit, request.stop)
+                result = runner(request.payload, emit, request.stop)
             with self._lock:
                 request.exit_code = result.exit_code
                 request.error = result.error

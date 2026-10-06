@@ -219,4 +219,37 @@ dialog{color:var(--text);background:#0b1117;border:1px solid #ffffff2b;border-ra
 @media(max-width:1060px){.statusbar #footer-requests{display:none}.drawer-tabs{gap:0}.request-layout{grid-template-columns:235px minmax(0,1fr);gap:18px}.node .nlat{display:none}.console .term{max-width:calc(100% - 230px)}.linkbar{gap:12px}.new-node{left:65%}.node{font-size:calc(12.5px * var(--font-scale))}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 
+/* Custom title bar: the header doubles as the window caption (WebView2 non-client region). */
+.app-mark{width:15px;height:15px;flex-shrink:0;margin-right:1px}
+.linkbar.titlebar{app-region:drag;padding-right:0;user-select:none}
+.linkbar.titlebar button{app-region:no-drag}
+/* Overlays that can cover the header take the pointer back from the caption. */
+.palette,dialog,.ctx-menu,.toast,.drawer{app-region:no-drag}
+.window-controls{display:flex;align-self:stretch;margin-left:-4px;app-region:no-drag}
+.window-controls button{width:46px;height:100%;display:flex;align-items:center;justify-content:center;background:none;border:0;color:var(--muted);border-radius:0}
+.window-controls svg{width:10px;height:10px;fill:none;stroke:currentColor;stroke-width:1}
+.window-controls button:hover{background:#ffffff12;color:var(--text)}.window-controls button:active{background:#ffffff1c}
+.window-controls .close:hover{background:#c42b1c;color:#fff}.window-controls .close:active{background:#b22a1b}
+.window-controls button:focus-visible{outline:1px solid var(--blue);outline-offset:-3px}
+/* The console column holds the local terminal dock; the approval gate keeps full height beside it. */
+.stage-main{position:relative;flex:1;min-width:0;display:flex;flex-direction:column}
+.stage-main>.console{flex:1;min-height:0}
+.local-dock{position:relative;flex-shrink:0;display:flex;flex-direction:column;min-height:150px;border-top:1px solid #9fd8ff2b;background:#07090cf2;box-shadow:0 -18px 50px #0009;z-index:4}
+.dock-resize{position:absolute;left:0;right:0;top:-4px;height:8px;cursor:ns-resize;z-index:1}.dock-resize:hover,.dock-resize:focus-visible{background:linear-gradient(transparent 3px,#9fd8ff55 3px 5px,transparent 5px);outline:none}
+.dock-head{display:flex;align-items:center;gap:10px;height:34px;flex-shrink:0;padding:0 8px 0 18px;border-bottom:1px solid var(--line-soft);font:calc(12px * var(--font-scale)) var(--mono);color:var(--dim);letter-spacing:.04em}
+.dock-title{color:var(--muted);white-space:nowrap;letter-spacing:.1em}
+.dock-tabs{display:flex;align-self:stretch;min-width:0;overflow-x:auto;scrollbar-width:none}
+.dock-tab{display:flex;align-items:center;border-bottom:1px solid transparent;margin-bottom:-1px;white-space:nowrap}
+.dock-tab button{background:none;border:0;color:var(--dim);font:inherit;padding:0 4px 0 10px;height:100%;display:flex;align-items:center;gap:7px}
+.dock-tab .dock-tab-close{padding:0 8px 0 4px;font-size:14px;opacity:.6}.dock-tab .dock-tab-close:hover{color:var(--red);opacity:1}
+.dock-tab.active{border-bottom-color:var(--blue)}.dock-tab.active button{color:var(--text)}.dock-tab.ended button:first-child{color:var(--dim);font-style:italic}
+.dock-tab button:hover{color:var(--blue)}.dock-tab button:focus-visible{outline:1px solid var(--blue);outline-offset:-3px}
+.dock-add{width:24px;height:24px;font-size:15px}
+.dock-note{margin-left:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-body{position:relative;flex:1;min-height:0}
+.dock-view{position:absolute;inset:6px 6px 4px 18px}
+.dock-empty{padding:18px;color:var(--dim);font-size:calc(12.5px * var(--font-scale))}
+.local-terminal .xterm{height:100%;padding:0}.local-terminal .xterm-viewport{scrollbar-width:thin;background:transparent!important}
+.local-terminal .xterm .xterm-screen{text-shadow:none}
+@media(max-width:1060px){.dock-head{padding-left:12px}.dock-view{left:12px}.dock-title{display:none}}
 .authorization-list{display:grid;gap:12px}.authorization-item{padding:12px;border:1px solid var(--line-soft);border-radius:3px}.authorization-item code,.authorization-item p{overflow-wrap:anywhere}.authorization-item p{font-size:calc(12px * var(--font-scale));color:var(--muted);margin:8px 0}.authorization-item small{font-size:calc(11px * var(--font-scale));color:var(--dim)}

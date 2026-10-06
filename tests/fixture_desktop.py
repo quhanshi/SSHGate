@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ssh_gate.config import load_config
 from ssh_gate.core import ApprovalManager
 from ssh_gate.desktop import DesktopAPI, frontend_html
+from ssh_gate.local_terminal import LocalTerminals, Shell
 from ssh_gate.prompts import LocalPrompts, PromptCancelled
 from ssh_gate.ssh import RunResult
 from ssh_gate.credentials import CredentialStore
@@ -173,6 +174,70 @@ class FixtureRunner:
         self.close_connections()
 
 
+class FixtureFrame:
+    """Stands in for the custom window frame; records caption commands instead of posting them."""
+    def __init__(self):
+        self.maximized, self.actions = False, []
+
+    def state(self):
+        return {"custom_frame": True, "maximized": self.maximized}
+
+    def command(self, action):
+        if action not in {"minimize", "maximize", "close"}:
+            raise ValueError("窗口操作无效")
+        self.actions.append(action)
+        if action == "maximize":
+            self.maximized = not self.maximized
+        return self.state()
+
+
+class FixturePty:
+    """Line-echo pseudo console: no real shell runs in UI tests."""
+    def __init__(self, cols, rows):
+        self.size, self.pid, self._out, self._alive, self._code, self._line = (cols, rows), None, ["PS C:\\fixture> "], True, None, ""
+        self._lock = threading.Lock()
+
+    def read(self, blocking=False):
+        with self._lock:
+            text, self._out = "".join(self._out), []
+            return text
+
+    def isalive(self):
+        return self._alive
+
+    def get_exitstatus(self):
+        return self._code
+
+    def set_size(self, cols, rows):
+        self.size = (cols, rows)
+
+    def write(self, data):
+        with self._lock:
+            for ch in data:
+                if ch == "\r":
+                    line, self._line = self._line, ""
+                    self._out.append("\r\n")
+                    if line.strip() == "exit":
+                        self._alive, self._code = False, 0
+                        return len(data)
+                    if line.startswith("echo "):
+                        self._out.append(line[5:] + "\r\n")
+                    elif line.strip() == "size":
+                        self._out.append(f"{self.size[0]}x{self.size[1]}\r\n")
+                    self._out.append("PS C:\\fixture> ")
+                elif ch == "\x7f":
+                    if self._line:
+                        self._line = self._line[:-1]
+                        self._out.append("\b \b")
+                elif ch == "\x03":
+                    self._line = ""
+                    self._out.append("^C\r\nPS C:\\fixture> ")
+                elif ch >= " ":
+                    self._line += ch
+                    self._out.append(ch)
+        return len(data)
+
+
 class FixtureWindow:
     def __init__(self, root):
         self.path = str(root / "export.txt")
@@ -192,7 +257,8 @@ def make_fixture(root: Path, seed=False, runner_factory=FixtureRunner):
     manager = ApprovalManager(load_config(root / "config.json"), runner=runner)
     runner.transfers=manager.transfers
     host, tunnel = FixtureHost(manager), FixtureTunnel()
-    api = DesktopAPI(manager, host, tunnel)
+    terminals = LocalTerminals(Shell("fixture-pwsh.exe", "PowerShell (pwsh)"), spawn=lambda _shell, cols, rows: FixturePty(cols, rows))
+    api = DesktopAPI(manager, host, tunnel, terminals=terminals, frame=FixtureFrame())
     api._bind(FixtureWindow(root))
     manager.local_gui_heartbeat()
     if seed:

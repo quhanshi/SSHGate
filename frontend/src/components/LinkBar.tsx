@@ -36,7 +36,7 @@ export function LinkBar({data,animate,onOpen}:{data:Snapshot|null;animate:boolea
  useEffect(()=>{if(!animate){setPulses([]);setHits({});}},[animate]);
  const segment=(seg:Seg,state:string,flow=false)=><span className={`chain-seg ${state} ${flow&&animate?'flow':''}`} id={'seg-'+seg}>{pulses.filter(p=>p.seg===seg).map(p=><i key={p.id} className={'pulse '+(p.back?'back':'')} style={{animationDelay:p.delay+'s'}}/>)}</span>;
  const lamp=(hop:Hop)=>{const h=animate&&hits[hop];return <i className="lamp">{h&&<b key={h.id} className={'ping '+(h.back?'back':'')} style={{animationDelay:h.delay+'s'}}/>}</i>;};
- const connected=data?.servers.filter(s=>s.connected).length||0,running=!!data?.requests.some(r=>r.status==='running'),waiting=(data?.mcp.calls_received??0)>(data?.mcp.calls_answered??0);
+ const remote=data?.servers.filter(s=>s.kind!=='local')||[],connected=remote.filter(s=>s.connected).length,running=!!data?.requests.some(r=>r.status==='running'),waiting=(data?.mcp.calls_received??0)>(data?.mcp.calls_answered??0);
  return <nav className="chain" aria-label="接入链路">
   <button className={'chain-node '+(data?.tunnel.ready?'ok':'')} id="chain-chatgpt" onClick={()=>onOpen('tunnel')} title="隧道就绪表示通路可用，无法确认 ChatGPT 会话状态">{lamp('chatgpt')}ChatGPT</button>
   {segment('tunnel',data?.tunnel.ready?'ok':'')}
@@ -44,6 +44,6 @@ export function LinkBar({data,animate,onOpen}:{data:Snapshot|null;animate:boolea
   {segment('mcp',data?.mcp.running?'ok':'bad')}
   <button className={'chain-node '+(data?.mcp.running?'ok':'bad')+(waiting&&animate?' busy':'')} id="chain-mcp" onClick={()=>onOpen('settings')} title={waiting?'有 MCP 调用正在等待返回':undefined}>{lamp('mcp')}MCP<small>:{data?.mcp.port||'—'}</small></button>
   {segment('ssh',connected?'ok':'',running)}
-  <button className={'chain-node '+(connected?'ok':'')} id="chain-ssh" onClick={()=>onOpen('connections')}>{lamp('ssh')}SSH<small>{connected} / {data?.servers.length||0}</small></button>
+  <button className={'chain-node '+(connected?'ok':'')} id="chain-ssh" onClick={()=>onOpen('connections')}>{lamp('ssh')}SSH<small>{connected} / {remote.length}</small></button>
  </nav>;
 }

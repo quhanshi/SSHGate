@@ -8,6 +8,8 @@ import {Fingerprint} from './Fingerprint';
 // Attempt 0 is the reuse check before any network attempt; only numbered attempts are shown.
 const hopText=(e:ConnectionEvent)=>`${e.connection_context.role==='jump'?'跳板':'目标'} ${e.connection_context.hop_index}/${e.connection_context.hop_count}${e.attempt?` · 第 ${e.attempt} 次`:''}`;
 const recordText=(events:ConnectionEvent[])=>events.map(e=>[`+${(e.elapsed_ms/1000).toFixed(3)}s`,hopText(e),e.event,eventNote(e)].filter(Boolean).join('  ')).join('\n');
+// Fades mark clipped content (orbit.css): the top once scrolled, the bottom while more remains below.
+const edges=(el:HTMLElement)=>{el.toggleAttribute('data-scrolled',el.scrollTop>1);el.toggleAttribute('data-more',el.scrollHeight-el.scrollTop-el.clientHeight>1);};
 // Inside the status panel, scroll only as far as the list needs; the toggle stays below the 16px top fade (orbit.css) so it can be closed again.
 const reveal=(details:HTMLDetailsElement)=>{
  const list=details.querySelector('ol'),body=details.closest('.orbit-body'),summary=details.querySelector('summary');
@@ -46,6 +48,11 @@ export function OrbitPanel({orbit:o,server,now,online,onDetail}:{orbit:OrbitStat
  // AEAD ciphers authenticate inside the cipher; Paramiko still reports an unused HMAC name for them.
  const aead=/gcm|poly1305/.test(String(m.cipher_out||'')),compressed=[m.compression_out,m.compression_in].some(v=>v&&v!=='none');
  const summary=[o.outcome==='reused'?'会话复用':elapsed+'s',m.key_type,m.cipher_out,o.outcome==='reused'?'':m.auth_method].filter(Boolean).join(' · ');
+ // Until the key is trusted, its state stays above the scrolling body so an open log cannot push it away.
+ const pinTrust=!!m.key_type&&['pending','mismatch','rejected'].includes(o.hostKey);
+ const keyRow=(className?:string)=><p className={className} data-host-key={o.hostKey}><span>主机密钥</span><code>{String(m.key_type)}{m.host_key_algorithm&&m.host_key_algorithm!==m.key_type?` (${m.host_key_algorithm})`:''} · {hostKeyLabel(o)}</code></p>;
+ const body=useRef<HTMLDivElement>(null);
+ useEffect(()=>{const el=body.current;if(!el)return;edges(el);const watch=new ResizeObserver(()=>edges(el));watch.observe(el);for(const child of el.children)watch.observe(child);return()=>watch.disconnect();},[open,o.last.seq,o.outcome]);
  return <section className={'orbit-panel '+(open?'expanded':'compact')} data-state={o.outcome} data-stage={o.stage} data-seq={o.last.seq} data-attempt={o.attempt} data-encrypted={o.encrypted} aria-label="SSH 连接状态">
   <div className="orbit-topline"><span className="orbit-kicker">SSH <i>/</i> 连接状态</span><span className="orbit-destination">{server.label}</span><button className="text-button" onClick={()=>onDetail(o.request.request_id)}>请求详情 ↗</button></div>
   <div className="orbit-heading"><h2 aria-live="polite">{title}</h2><OrbitClock orbit={o} now={now} online={online}/></div>
@@ -53,7 +60,8 @@ export function OrbitPanel({orbit:o,server,now,online,onDetail}:{orbit:OrbitStat
   {diagnosticFailed&&<p className="orbit-warning">{o.request.operation==='test_connection'?'SSH 握手已成功，后续连接诊断未通过；请查看请求详情。':'SSH 握手已成功，后续任务未完成；请查看请求详情。'}</p>}
   {o.hostKey==='mismatch'&&<p className="orbit-warning danger">服务器公钥与 known_hosts 中已保存的记录不一致。可能是服务器重装或更换了密钥，也可能存在中间人；请通过可信渠道核实后再手动更新 known_hosts。</p>}
   {!active&&!server.connected&&!failed&&<p className="orbit-warning">此为上次握手记录，当前连接已断开。</p>}
-  {open&&<div className="orbit-body" tabIndex={0} aria-label="连接详情" onScroll={e=>e.currentTarget.toggleAttribute('data-scrolled',e.currentTarget.scrollTop>1)}><div className="orbit-route"><span>{hop} · {context.via_host_alias?`经由 ${context.via_host_alias} → `:''}{context.host_alias||context.hostname}:{context.port}</span><span>{o.attempt?`第 ${o.attempt} 次尝试`:'复用检查'}</span></div>
+  {open&&pinTrust&&keyRow('orbit-trust')}
+  {open&&<div className="orbit-body" ref={body} tabIndex={0} aria-label="连接详情" onScroll={e=>edges(e.currentTarget)}><div className="orbit-route"><span>{hop} · {context.via_host_alias?`经由 ${context.via_host_alias} → `:''}{context.host_alias||context.hostname}:{context.port}</span><span>{o.attempt?`第 ${o.attempt} 次尝试`:'复用检查'}</span></div>
    {o.outcome==='reused'?<p className="orbit-reuse">沿用已有 SSH 会话，未重新握手。</p>:<ol className="orbit-stages" aria-label="握手阶段">{orbitStages.map((s,i)=>{
     const done=o.completed.has(s),delegated=s==='dns'&&!done&&o.resolver!=='local'?resolvers[o.resolver]:'';
     return <li key={s} data-stage={s} className={(done?'done ':delegated?'delegated ':'')+(s===o.stage?'current':'')} aria-current={s===o.stage?'step':undefined}><span>{done?'✓':delegated?'—':String(i+1).padStart(2,'0')}</span>{delegated||stageLabels[s]}</li>;
@@ -61,7 +69,7 @@ export function OrbitPanel({orbit:o,server,now,online,onDetail}:{orbit:OrbitStat
    <div className="orbit-observation">{fingerprint&&<Fingerprint value={fingerprint} state={o.hostKey} expected={String(m.expected_fingerprint||'')}/>}<div className="orbit-facts">
     {m.server_version&&<p><span>服务端</span><code>{softwareVersion(m.server_version)}</code></p>}
     {m.kex&&<p><span>密钥交换</span><code>{String(m.kex)}</code></p>}
-    {m.key_type&&<p data-host-key={o.hostKey}><span>主机密钥</span><code>{String(m.key_type)}{m.host_key_algorithm&&m.host_key_algorithm!==m.key_type?` (${m.host_key_algorithm})`:''} · {hostKeyLabel(o)}</code></p>}
+    {m.key_type&&!pinTrust&&keyRow()}
     {m.cipher_out&&<p><span>加密</span><code>{pair(m.cipher_out,m.cipher_in)}</code></p>}
     {m.cipher_out&&(aead||m.mac_out)&&<p><span>完整性</span><code>{aead?'由加密算法内含 (AEAD)':pair(m.mac_out,m.mac_in)}</code></p>}
     {compressed&&<p><span>压缩</span><code>{pair(m.compression_out,m.compression_in)}</code></p>}
