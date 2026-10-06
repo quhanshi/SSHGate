@@ -14,6 +14,7 @@ from pathlib import Path
 from . import __version__
 from .config import Server
 from .credentials import CredentialStore
+from .local_terminal import LocalTerminals
 from .ssh import known_host_candidates, config_profiles, resolve_settings
 
 
@@ -28,11 +29,13 @@ class DesktopAPI:
     """Only this in-process WebView gets the capability. Nothing here is an HTTP/MCP route."""
     _TUNNEL_API_KEY_REF = CredentialStore.secret_reference("openai-secure-mcp-tunnel-api-key")
 
-    def __init__(self, manager, host, tunnel):
+    def __init__(self, manager, host, tunnel, terminals=None, frame=None):
         self._manager, self._host, self._tunnel = manager, host, tunnel
         self._credentials = getattr(getattr(manager, "runner", None), "credentials", None)
         self._token = secrets.token_urlsafe(32)
         self._window = None
+        self._terminals = terminals if terminals is not None else LocalTerminals.for_platform()
+        self._frame = frame
         self._lock = threading.RLock()
         self._reviews = {}
         self._active_prompt = None
@@ -80,7 +83,7 @@ class DesktopAPI:
                 tunnel["api_key_saved"] = False
             return {"version": __version__, "uptime_seconds": int(time.monotonic() - self._started),
                     "mcp": self._host.status(), "tunnel": tunnel,
-                    "servers": [{**asdict(s), "connected": states.get(s.id, False),
+                    "servers": [{**asdict(s), "connected": s.kind == "local" or states.get(s.id, False),
                                  "last_diagnostics": self._manager.server_info.get(s.id)} for s in config.servers],
                     "requests": self._manager.list_summaries(), "prompt": prompt,
                     "authorizations": self._manager.list_auto_approvals()["authorizations"],
@@ -160,7 +163,7 @@ class DesktopAPI:
 
     def save_connection(self, token, values, editing=False):
         def save():
-            allowed = {"id", "label", "ssh_target", "default_cwd", "port", "identity_file", "ssh_config_file", "auto_categories", "auto_roots", "auto_grant_capabilities", "github_hosts"}
+            allowed = {"id", "label", "ssh_target", "default_cwd", "port", "identity_file", "ssh_config_file", "auto_categories", "auto_roots", "auto_grant_capabilities", "github_hosts", "kind", "workspace_roots"}
             if not isinstance(values, dict) or set(values) - allowed or type(editing) is not bool:
                 raise ValueError("连接参数无效")
             server = Server(**values)
@@ -369,12 +372,49 @@ class DesktopAPI:
             webbrowser.open(urls[destination])
         return self._reply(token, open_link)
 
+    def _local(self, token, fn):
+        """Capability check without the manager lock or heartbeat, for local-only window and terminal I/O."""
+        try:
+            self._check(token)
+            return {"ok": True, "data": fn()}
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def window_state(self, token):
+        return self._local(token, lambda: self._frame.state() if self._frame else {"custom_frame": False, "maximized": False})
+
+    def window_action(self, token, action):
+        def act():
+            if not self._frame:
+                raise ValueError("窗口操作无效")
+            return self._frame.command(action)
+        return self._local(token, act)
+
+    def terminal_info(self, token):
+        return self._local(token, self._terminals.info)
+
+    def terminal_open(self, token, cols, rows):
+        return self._local(token, lambda: self._terminals.open(cols, rows))
+
+    def terminal_write(self, token, session_id, data):
+        return self._local(token, lambda: self._terminals.write(session_id, data))
+
+    def terminal_resize(self, token, session_id, cols, rows):
+        return self._local(token, lambda: self._terminals.resize(session_id, cols, rows))
+
+    def terminal_read(self, token, session_id, offset):
+        return self._local(token, lambda: self._terminals.read(session_id, offset))
+
+    def terminal_close(self, token, session_id):
+        return self._local(token, lambda: self._terminals.close(session_id))
+
     def _close(self):
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             self._reviews.clear()
+        self._terminals.close_all()
         self._tunnel.close()
         self._manager.close()
         try:

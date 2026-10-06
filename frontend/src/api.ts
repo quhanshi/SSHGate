@@ -1,4 +1,4 @@
-import type {Snapshot,RequestDetail,RequestSummary,Profiles,Route,Transfer,Session} from './types';
+import type {Snapshot,RequestDetail,RequestSummary,Profiles,Route,Transfer,Session,WindowState,TerminalInfo,TerminalChunk} from './types';
 interface ApiMap {
  snapshot: [[],Snapshot]; request_detail:[[string,number?],RequestDetail]; begin_review:[[string],{ticket:string;request:RequestDetail}]; approve:[[string,string,boolean],null]; reject:[[string],unknown]; terminate_request:[[string],RequestDetail];
  set_readonly:[[boolean],unknown]; save_settings:[[Record<string,unknown>],unknown]; set_mcp_running:[[boolean],unknown];
@@ -8,6 +8,8 @@ interface ApiMap {
  session_action:[[string,Record<string,unknown>],RequestSummary]; session_detail:[[string],Session]; submit_local:[[string,string,string,string,number],RequestSummary];
  save_tunnel:[[Record<string,unknown>],unknown]; start_tunnel:[[string,boolean],unknown]; clear_tunnel_api_key:[[],unknown]; stop_tunnel:[[],unknown]; download_tunnel:[[],unknown]; proxy_action:[[string,string?,string?],unknown]; open_external:[[string],unknown];
  answer_prompt:[[string,unknown],unknown]; export_output:[[string],string|null];
+ window_state:[[],WindowState]; window_action:[[string],WindowState];
+ terminal_info:[[],TerminalInfo]; terminal_open:[[number,number],{id:string;shell:string}]; terminal_write:[[string,string],null]; terminal_resize:[[string,number,number],null]; terminal_read:[[string,number],TerminalChunk]; terminal_close:[[string],null];
 }
 declare global {interface Window {__APP_TOKEN__?:string;pywebview?:{api:Record<string,(token:string,...args:unknown[])=>Promise<{ok:boolean;data?:unknown;error?:string}>>};SSHUI?:{refresh:()=>Promise<void>;go:(page:string)=>void;diagnostics:()=>Record<string,unknown>}}}
 export async function api<K extends keyof ApiMap>(method:K,...args:ApiMap[K][0]):Promise<ApiMap[K][1]> {

@@ -11,6 +11,7 @@ from .config import load_config
 from .core import ApprovalManager
 from .desktop import DesktopAPI, frontend_html
 from .runtime import MCPHost, TunnelRuntime
+from .window_frame import WindowFrame
 
 
 def resource_root() -> Path:
@@ -56,7 +57,8 @@ def main():
         host = MCPHost(manager)
         executable_dir = Path(sys.executable).parent if getattr(sys, "frozen", False) else resource_root()
         tunnel = TunnelRuntime(resource_root(), executable_dir)
-        api = DesktopAPI(manager, host, tunnel)
+        frame = WindowFrame()
+        api = DesktopAPI(manager, host, tunnel, frame=frame)
         try:
             host.start()
         except ValueError:
@@ -68,6 +70,7 @@ def main():
             js_api=api, width=1400, height=900, min_size=(960, 680), background_color="#090d12",
             text_select=True, confirm_close=True, zoomable=False)
         api._bind(window)
+        window.events.before_show += frame.attach  # runs on the UI thread before the form is shown
         window.events.closed += api._close
         def dark_title():
             if os.name == "nt":
@@ -78,8 +81,9 @@ def main():
                 except Exception:
                     pass
         window.events.shown += dark_title
+        icon = resource_root() / "assets/app.ico"
         webview.start(gui="edgechromium" if os.name == "nt" else None,
-            debug=args.debug_ui, private_mode=True, http_server=False,
+            debug=args.debug_ui, private_mode=True, http_server=False, icon=str(icon) if icon.is_file() else None,
             localization={"global.quitConfirmation": "退出将停止隧道、关闭 SSH 连接并拒绝尚未执行的请求。确认退出？"})
         return 0
     except Exception as exc:

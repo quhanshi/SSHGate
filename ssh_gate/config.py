@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace, asdict, field
 from pathlib import Path
 
 from .proxy import validate_proxy_url
+from .winpath import windows_path, within
 
 
 def checked_text(value: str, label: str, *, multiline: bool = False) -> str:
@@ -34,6 +35,8 @@ class Server:
     auto_roots: tuple[str, ...] = ()
     auto_grant_capabilities: tuple[str, ...] = ()
     github_hosts: tuple[str, ...] = ()
+    kind: str = "ssh"   # "local": this Windows PC, bounded by workspace_roots
+    workspace_roots: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,25 @@ def resolve_local_path(root: Path, value: str) -> str:
     return str((root / expanded).resolve() if not expanded.is_absolute() else expanded)
 
 
+def _local_server(raw: dict, sid: str, label: str) -> Server:
+    # Directories are not required to exist here: a missing drive must not stop the app from starting.
+    roots = raw.get("workspace_roots", [])
+    if not isinstance(roots, (list, tuple)) or not 1 <= len(roots) <= 8:
+        raise ValueError("本机工作区需要 1–8 个目录")
+    roots = tuple(dict.fromkeys(windows_path(r, label="工作区目录") for r in roots))
+    cwd = raw.get("default_cwd") or roots[0]
+    cwd = windows_path(roots[0] if cwd == "." else cwd, roots[0], "默认目录")
+    if not within(cwd, roots):
+        raise ValueError("本机默认目录必须位于工作区内")
+    categories = raw.get("auto_categories", [])
+    if not isinstance(categories, (list, tuple)) or set(categories) - {"read_fs", "manual_only"}:
+        raise ValueError("本机工作区只支持文件读取自动放行或全部人工审批")
+    if (any(raw.get(f) for f in ("ssh_target", "identity_file", "ssh_config_file", "auto_roots",
+                                  "auto_grant_capabilities", "github_hosts")) or raw.get("port") is not None):
+        raise ValueError("本机工作区不使用 SSH 连接、目录授权或 Git 主机设置")
+    return Server(sid, label, "", cwd, auto_categories=tuple(categories), kind="local", workspace_roots=roots)
+
+
 def load_config(path: Path) -> Config:
     path = path.resolve()
     data = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -97,6 +119,15 @@ def load_config(path: Path) -> Config:
         sid = raw["id"]
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", sid) or sid in ids:
             raise ValueError("服务器 id 必须唯一，仅允许字母、数字、下划线和连字符")
+        kind = raw.get("kind", "ssh")
+        if kind not in {"ssh", "local"}:
+            raise ValueError("连接类型必须是 ssh 或 local")
+        if kind == "local":
+            servers.append(_local_server(raw, sid, checked_text(raw.get("label", sid), "服务器名称")))
+            ids.add(sid)
+            continue
+        if raw.get("workspace_roots"):
+            raise ValueError("工作区目录只用于本机连接")
         target = raw["ssh_target"]
         if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.@:\[\]-]{0,253}", target):
             raise ValueError("ssh_target 应为 SSH Host 别名或 user@hostname，不可包含命令/选项")

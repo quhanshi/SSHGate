@@ -39,7 +39,11 @@ dialog .fingerprint-art{width:240px;margin:18px auto}dialog .fingerprint-art fig
 @media(max-height:750px){.orbit-panel{margin-top:8px;margin-bottom:8px}.orbit-panel .orbit-heading{margin:7px 0}.orbit-stages{margin:9px 0}.orbit-panel .fingerprint-art{width:120px}.orbit-panel .fingerprint-art figcaption span{display:none}}
 
 .orbit-panel>div:not(.orbit-body),.orbit-panel>p{flex-shrink:0}
-.orbit-body{min-height:0;overflow:auto;scrollbar-width:thin;padding-right:3px}.orbit-body[data-scrolled]{-webkit-mask-image:linear-gradient(transparent,#000 16px);mask-image:linear-gradient(transparent,#000 16px)}
+.orbit-body{--fade-top:#000;--fade-bottom:#000;min-height:0;overflow:auto;scrollbar-width:thin;padding-right:3px}
+.orbit-body[data-scrolled]{--fade-top:transparent}.orbit-body[data-more]{--fade-bottom:transparent}
+.orbit-body[data-scrolled],.orbit-body[data-more]{-webkit-mask-image:linear-gradient(var(--fade-top),#000 16px,#000 calc(100% - 22px),var(--fade-bottom));mask-image:linear-gradient(var(--fade-top),#000 16px,#000 calc(100% - 22px),var(--fade-bottom))}
+.orbit-trust{display:flex;gap:10px;margin:2px 0 6px;font-size:calc(10px * var(--font-scale));line-height:1.6;color:#b2c1cd}.orbit-trust>span{flex:0 0 70px;color:#7f929f;white-space:nowrap}.orbit-trust code{font-family:var(--mono);overflow-wrap:anywhere;color:#e9bf82}
+.orbit-trust[data-host-key=mismatch] code,.orbit-trust[data-host-key=rejected] code{color:#ff8b9b}
 .orbit-body .connection-telemetry ol{max-height:none;overflow:visible}
 .orbit-facts p>span{flex-basis:70px;white-space:nowrap}
 @media(max-width:1060px){.orbit-facts p>span{flex-basis:68px}.node .nplate{display:none}}

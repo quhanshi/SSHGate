@@ -53,7 +53,7 @@ const meta={server_version:'SSH-2.0-OpenSSH_9.9',client_version:'SSH-2.0-paramik
   await emit('algorithms_negotiated','key_exchange',{kex:meta.kex,cipher_out:meta.cipher_out,cipher_in:meta.cipher_in});assert((await page.locator('.orbit-facts').textContent()).includes(meta.kex));
   await emit('host_key_received','host_key',{fingerprint,key_type:meta.key_type});assert.equal(await page.locator('.orbit-panel .fingerprint-art.unverified').count(),1);
   assert.equal(await page.locator('.orbit-stages [data-stage="host_key"].done').count(),0);assert.equal(await page.locator('.orbit-stages [data-stage="key_exchange"].done').count(),1);
-  assert.equal(await page.locator('.orbit-panel').getAttribute('data-encrypted'),'true');assert.equal(await page.locator('.orbit-facts [data-host-key="pending"]').count(),1);await capture('orbit-fingerprint');
+  assert.equal(await page.locator('.orbit-panel').getAttribute('data-encrypted'),'true');assert.equal(await page.locator('.orbit-panel > .orbit-trust[data-host-key="pending"]').count(),1);await capture('orbit-fingerprint');
  });
  await check('host key constellation never accepts trust without a local user action',async()=>{
   await emit('host_key_confirmation_required','host_key');await rpc('fixture_ask_key',[fingerprint]);await page.getByRole('heading',{name:'确认新的主机指纹'}).waitFor();
@@ -82,9 +82,9 @@ const meta={server_version:'SSH-2.0-OpenSSH_9.9',client_version:'SSH-2.0-paramik
   await start();await emit('host_key_received','host_key',{fingerprint,key_type:'ssh-ed25519'});await emit('connection_failed','host_key',{code:'host_key_mismatch',fingerprint,expected_fingerprint:'SHA256:'+'A'.repeat(43)},{finish:'mismatch'});
   assert.equal(await title(),'主机指纹不符');assert.equal(await page.locator('.orbit-panel .fingerprint-art.verified').count(),0);assert((await page.locator('.orbit-facts').textContent()).includes('已保存指纹'));
   assert.equal(await page.locator('.orbit-panel .fingerprint-art.mismatch .fingerprint-saved').count(),1);assert.equal(await page.locator('.orbit-panel figcaption').evaluate(e=>e.firstChild.textContent),'与已保存指纹不符');
-  assert(!(await page.locator('.orbit-facts').textContent()).includes('尚未信任'));assert.equal(await page.locator('.orbit-warning.danger').count(),1);await capture('orbit-host-key-mismatch');
+  assert(!(await page.locator('.orbit-panel').textContent()).includes('尚未信任'));assert.match(await page.locator('.orbit-panel > .orbit-trust[data-host-key="mismatch"]').textContent(),/与已保存记录不符/);assert.equal(await page.locator('.orbit-warning.danger').count(),1);await capture('orbit-host-key-mismatch');
   await start();await emit('host_key_received','host_key',{fingerprint,key_type:'ssh-ed25519'});await finish('host_key_rejected','host_key');assert.equal(await title(),'未信任主机指纹');
-  assert.equal(await page.locator('.orbit-panel figcaption').evaluate(e=>e.firstChild.textContent),'已拒绝此指纹');assert.match(await page.locator('.orbit-facts [data-host-key="rejected"]').textContent(),/已拒绝信任/);
+  assert.equal(await page.locator('.orbit-panel figcaption').evaluate(e=>e.firstChild.textContent),'已拒绝此指纹');assert.match(await page.locator('.orbit-panel > .orbit-trust[data-host-key="rejected"]').textContent(),/已拒绝信任/);
  });
  await check('retry clears identity and trust from the failed attempt',async()=>{
   await start();await emit('host_key_verified','host_key',meta);await emit('authentication_method_failed','authentication',{method:'password'});await state('active');
@@ -106,6 +106,11 @@ const meta={server_version:'SSH-2.0-OpenSSH_9.9',client_version:'SSH-2.0-paramik
   const log=await page.evaluate(()=>{const s=document.querySelector('.orbit-panel .connection-telemetry summary'),b=document.querySelector('.orbit-panel .telemetry-tools button').getBoundingClientRect(),r=document.createRange();r.selectNodeContents(s);const t=r.getBoundingClientRect(),l=document.querySelector('.orbit-panel .connection-telemetry ol'),body=document.querySelector('.orbit-panel .orbit-body');
    return {sameRow:b.top<t.bottom&&b.bottom>t.top,clear:t.right<=b.left,oneScroller:l.scrollHeight<=l.clientHeight+1,fade:body.scrollTop>1&&body.hasAttribute('data-scrolled')};});
   assert.deepEqual(log,{sameRow:true,clear:true,oneScroller:true,fade:true});
+  // Untrusted key state is pinned outside the scroller; the bottom fade shows only while content remains below.
+  const trust=await page.evaluate(()=>{const t=document.querySelector('.orbit-panel > .orbit-trust'),b=document.querySelector('.orbit-panel .orbit-body');return {pinned:!!t&&!b.contains(t)&&t.getBoundingClientRect().bottom<=b.getBoundingClientRect().top+1,text:t?.textContent||'',more:b.hasAttribute('data-more'),inBody:!!b.querySelector('[data-host-key]')};});
+  assert.deepEqual({pinned:trust.pinned,untrusted:trust.text.includes('尚未信任'),inBody:trust.inBody},{pinned:true,untrusted:true,inBody:false});
+  if(trust.more){await page.locator('.orbit-panel .orbit-body').evaluate(b=>{b.scrollTop=b.scrollHeight;b.dispatchEvent(new Event('scroll'));});assert.equal(await page.locator('.orbit-panel .orbit-body[data-more]').count(),0);}
+  await page.locator('.orbit-panel .orbit-body').evaluate(b=>{b.scrollTop=0;b.dispatchEvent(new Event('scroll'));});assert.equal(await page.locator('.orbit-panel .orbit-body[data-more]').count(),trust.more?1:0);await capture('orbit-small-window-top');
   await page.locator('.orbit-panel .connection-telemetry summary').click();assert.equal(await page.locator('.orbit-panel .connection-telemetry[open]').count(),0);
   await rpc('save_settings',[{ui:{effects:'off',motion_enabled:false,scale_percent:130}}]);await page.waitForFunction(()=>document.body.classList.contains('fx-off'));await sleep(200);
   const a=await page.locator('#scene').evaluate(c=>c.toDataURL());await sleep(750);const b=await page.locator('#scene').evaluate(c=>c.toDataURL());assert.equal(a,b);await finish('timeout','host_key');

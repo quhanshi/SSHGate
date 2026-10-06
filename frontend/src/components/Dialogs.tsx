@@ -1,6 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {api} from '../api';
 import {Fingerprint} from './Fingerprint';
+import {isLocal,targetLabel} from '../utils';
 import type {Modal,Profiles,Prompt,Route,Session,Snapshot} from '../types';
 function value(form:HTMLFormElement,name:string){return (form.elements.namedItem(name) as HTMLInputElement|null)?.value||'';}
 function checked(form:HTMLFormElement,name:string){return !!(form.elements.namedItem(name) as HTMLInputElement|null)?.checked;}
@@ -34,17 +35,36 @@ export function ConnectionFields({data,id,policy}:{data:Snapshot;id?:string;poli
   {error&&<p className="error">{error}</p>}
  </div>;
 }
+// This PC as a target. The workspace bounds file tools; PowerShell commands are approved one by one.
+function LocalFields({data,id}:{data:Snapshot;id?:string}){
+ const existing=data.servers.find(s=>s.id===id);let number=1;while(data.servers.some(s=>s.id==='local'+(number>1?number:'')))number++;
+ const roots=existing?.workspace_roots||[];
+ return <div>
+  <p className="modal-intro">把本机的指定目录交给 MCP 使用。文件浏览、读取、搜索、上传和下载只在这些目录内进行，经过符号链接或目录联接到达外部的路径会被拒绝。</p>
+  <div className="form-grid"><label>连接 ID<input id="conn-id" name="id" defaultValue={existing?.id||'local'+(number>1?number:'')} readOnly={!!existing} required pattern="[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}"/></label><label>显示名称<input id="conn-label" name="label" defaultValue={existing?.label||'本机工作区'} required autoFocus/></label></div>
+  <label>工作区目录 / 每行一个，最多 8 个<textarea id="local-roots" name="workspace_roots" rows={3} required spellCheck={false} defaultValue={roots.join('\n')} placeholder={'D:\\Work\\project'}/></label>
+  <label>默认工作目录<input id="conn-cwd" name="default_cwd" defaultValue={existing?.default_cwd||''} placeholder="留空使用第一个工作区目录" spellCheck={false}/></label>
+  <label className="check"><input id="local-auto-read" name="auto_read" type="checkbox" defaultChecked={existing?existing.auto_categories.includes('read_fs'):true}/>只读开关开启时，工作区内的浏览、读取、搜索和下载自动放行</label>
+  <p className="inline-help">PowerShell 命令以当前 Windows 用户权限运行，从工作目录启动但可以访问工作区以外的路径，因此每条命令都需要人工审批，不适用临时授权。上传和会话变更同样需要审批。</p>
+ </div>;
+}
 export function ModalHost({modal,data,onClose,onRefresh,onRequest,onConnect}:{modal:Exclude<Modal,null>;data:Snapshot;onClose:()=>void;onRefresh:()=>Promise<void>;onRequest:(id:string)=>void;onConnect:(id:string,server:string)=>void}){
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[session,setSession]=useState<Session|null>(null),formRef=useRef<HTMLFormElement>(null);
  const sessionId=(modal.kind==='session'||modal.kind==='session-command')?modal.id:undefined;
  useEffect(()=>{let alive=true;if(sessionId)void api('session_detail',sessionId).then(s=>{if(alive)setSession(s);}).catch(e=>{if(alive)setError(String(e));});return()=>{alive=false;};},[sessionId]);
- const titles={connection:modal.kind==='connection'&&modal.server?'编辑服务器连接':'新建服务器连接',command:'本地提交命令',upload:'上传到服务器',session:sessionId?'修改会话上下文':'创建受控会话','session-command':'在会话上下文执行',confirm:modal.kind==='confirm'?modal.title:''};
+ const local=modal.kind==='connection'&&(modal.local||isLocal(data.servers.find(s=>s.id===modal.server)));
+ const titles={connection:local?(modal.kind==='connection'&&modal.server?'编辑本机工作区':'新建本机工作区'):modal.kind==='connection'&&modal.server?'编辑服务器连接':'新建服务器连接',command:'本地提交命令',upload:'上传到服务器',session:sessionId?'修改会话上下文':'创建受控会话','session-command':'在会话上下文执行',confirm:modal.kind==='confirm'?modal.title:''};
  const serverId=('server' in modal?modal.server:undefined)||data.servers[0]?.id||'';
  const submit=async(event:React.FormEvent<HTMLFormElement>)=>{
   event.preventDefault();if(busy)return;setBusy(true);setError('');const form=event.currentTarget;
   try{
    let request:RequestSummaryLike|null=null,connectionServer='';
-   if(modal.kind==='connection'){
+   if(modal.kind==='connection'&&local){
+    const id=value(form,'id').trim(),roots=value(form,'workspace_roots').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    if(!roots.length)throw new Error('至少填写一个工作区目录');
+    await api('save_connection',{id,label:value(form,'label').trim(),kind:'local',ssh_target:'',workspace_roots:roots,default_cwd:value(form,'default_cwd').trim()||roots[0],auto_categories:checked(form,'auto_read')?['read_fs']:['manual_only']},!!modal.server);
+    if((event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')==='test'){request=await api('test_connection',id);connectionServer=id;}
+   }else if(modal.kind==='connection'){
     const host=value(form,'host').trim(),user=value(form,'user').trim(),defaults=checked(form,'policy_default'),categories=new FormData(form).getAll('category').map(String),roots=value(form,'auto_roots').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
     if(!defaults&&categories.includes('python_tests')&&!roots.length)throw new Error('自动测试执行必须指定授权目录');
     const grantCapabilities=new FormData(form).getAll('grant_capability').map(String);if(grantCapabilities.length&&!roots.length)throw new Error('临时授权预授权必须指定目录');
@@ -60,13 +80,13 @@ export function ModalHost({modal,data,onClose,onRefresh,onRequest,onConnect}:{mo
    onClose();await onRefresh();if(request){if(connectionServer)onConnect(request.request_id,connectionServer);else onRequest(request.request_id);}
   }catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
  };
- const select=<label>服务器<select name="server_id" defaultValue={session?.server_id||serverId} disabled={!!sessionId} required>{data.servers.map(s=><option key={s.id} value={s.id}>{s.label} / {s.ssh_target}</option>)}</select></label>;
+ const select=<label>服务器<select name="server_id" defaultValue={session?.server_id||serverId} disabled={!!sessionId} required>{data.servers.map(s=><option key={s.id} value={s.id}>{s.label} / {targetLabel(s)}</option>)}</select></label>;
  const commands=<><label>执行目的<input id={modal.kind==='command'?'cmd-reason':'session-reason'} name="reason" required defaultValue={modal.kind==='session-command'?'在受控会话中执行命令':''}/></label><label>完整命令<textarea id={modal.kind==='command'?'cmd-script':'session-command'} name="command" rows={6} spellCheck={false} required autoFocus/></label><label>执行时限 / 秒<input name="timeout" type="number" min="1" max={data.settings.max_command_timeout_seconds} defaultValue={300} required/></label></>;
  return <Dialog title={titles[modal.kind]} onClose={()=>{if(!busy)onClose();}} wide><form ref={formRef} onSubmit={submit}>
   <fieldset disabled={busy} className="modal-fields">
-   {modal.kind==='connection'&&<ConnectionFields data={data} id={modal.server} policy={modal.policy}/>}
+   {modal.kind==='connection'&&(local?<LocalFields data={data} id={modal.server}/>:<ConnectionFields data={data} id={modal.server} policy={modal.policy}/>)}
    {modal.kind==='command'&&<>{select}<label>工作目录<input name="cwd" defaultValue={data.servers.find(s=>s.id===serverId)?.default_cwd||'.'} required/></label>{commands}</>}
-   {modal.kind==='upload'&&<><p>{modal.transfer.file_name} · {modal.transfer.size_bytes} bytes</p><p className="inline-help">SHA256 {modal.transfer.sha256}</p>{select}<label>模式<select name="operation" id="up-mode"><option value="upload_file">上传为单文件</option><option value="upload_directory">ZIP 解压到新目录</option></select></label><label>远程完整目标路径<input id="up-path" name="path" placeholder="/data/project/patch.zip" required/></label><label className="check"><input id="up-overwrite" name="overwrite" type="checkbox"/>允许覆盖已有普通文件 / 单文件模式</label><p className="inline-help">提交后仍需核对并批准。</p></>}
+   {modal.kind==='upload'&&<><p>{modal.transfer.file_name} · {modal.transfer.size_bytes} bytes</p><p className="inline-help">SHA256 {modal.transfer.sha256}</p>{select}<label>模式<select name="operation" id="up-mode"><option value="upload_file">上传为单文件</option><option value="upload_directory">ZIP 解压到新目录</option></select></label><label>目标完整路径<input id="up-path" name="path" placeholder="/data/project/patch.zip · 本机如 D:\Work\project\patch.zip" required/></label><label className="check"><input id="up-overwrite" name="overwrite" type="checkbox"/>允许覆盖已有普通文件 / 单文件模式</label><p className="inline-help">提交后仍需核对并批准。</p></>}
    {modal.kind==='session'&&(!sessionId||session)?<div key={session?.revision||0}>{select}<label>工作目录<input id="session-cwd" name="cwd" defaultValue={session?.cwd||data.servers.find(s=>s.id===serverId)?.default_cwd||'.'} required/></label><label>环境变量 / JSON<textarea id="session-env" name="environment" rows={5} defaultValue={JSON.stringify(session?.environment||{},null,2)} required spellCheck={false}/></label><p className="inline-help">修改上下文需要审批；请勿填写密码。</p></div>:null}
    {modal.kind==='session-command'&&<><p>{session?.server_id} · {session?.cwd||'读取上下文…'}</p>{commands}</>}
    {modal.kind==='confirm'&&<p className="modal-intro">{modal.text}</p>}
