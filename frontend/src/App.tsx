@@ -21,7 +21,7 @@ export default function App(){
  const desktop=useDesktop(),{data,online,error,lines,details,refresh,terrain}=desktop;
  const [drawer,setDrawer]=useState<Drawer|null>(null),[modal,setModal]=useState<Modal>(null),[focus,setFocus]=useState<string|null>(null),[selected,setSelected]=useState<string|null>(null),[gateSelected,setGateSelected]=useState<string|null>(null),[gateOpen,setGateOpen]=useState(false),[palette,setPalette]=useState(false),[query,setQuery]=useState(''),[paletteIndex,setPaletteIndex]=useState(0),[context,setContext]=useState<ContextMenu|null>(null),[effects,setEffects]=useState<Effects>('standard'),[reduced,setReduced]=useState(matchMedia('(prefers-reduced-motion: reduce)').matches),[clock,setClock]=useState(new Date()),[toast,setToast]=useState<{text:string;error:boolean}|null>(null),[leaving,setLeaving]=useState<Record<string,string>>({});
  const toastTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined),leaveTimers=useRef<ReturnType<typeof setTimeout>[]>([]),newIds=useRef(new Set<string>()),paletteInput=useRef<HTMLInputElement>(null),drawerRef=useRef<HTMLElement>(null),lastFocus=useRef<HTMLElement|null>(null),scaleInitialized=useRef(false);
- const keyHandler=useRef<(event:KeyboardEvent)=>void>(()=>{});
+ const keyHandler=useRef<(event:KeyboardEvent)=>void>(()=>{}),quickApproving=useRef(false);
  const {frame,windowAction}=useWindowFrame(),[dock,setDock]=useState(false);
  const effective=reduced&&effects==='standard'?'low':effects;
  const notify=useCallback((text:string,error=false)=>{setToast({text,error});clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(null),error?7000:3200);},[]);
@@ -72,6 +72,16 @@ export default function App(){
  useEffect(()=>setPaletteIndex(0),[query]);
  const chosen=Math.min(paletteIndex,Math.max(0,commands.length-1));
  useEffect(()=>{if(palette)document.getElementById('palette-option-'+chosen)?.scrollIntoView({block:'nearest'});},[chosen,palette]);
+ // A on the main view approves the top pending request at once; the approve button keeps its 0.5 s hold.
+ const approveTop=async()=>{
+  const top=pending.find(r=>!leaving[r.request_id]);
+  if(!top||quickApproving.current||hold.busy)return;
+  if(!details[top.request_id]){notify('正在读取完整请求，请稍后再按 A',true);return;}
+  if(top.operation!=='request_auto_approval'&&data?.requests.some(r=>r.status==='running')){notify('已有命令正在运行；完成后再批准下一条',true);return;}
+  quickApproving.current=true;hold.stop();setGateSelected(top.request_id);
+  try{const review=await api('begin_review',top.request_id);await api('approve',top.request_id,review.ticket,true);await approved(top.request_id);}
+  catch(e){report(e);}finally{quickApproving.current=false;}
+ };
  keyHandler.current=(e:KeyboardEvent)=>{
    if(e.defaultPrevented)return;
    if(e.ctrlKey&&!e.altKey&&!e.metaKey&&e.code==='Backquote'){if(data?.prompt||modal)return;e.preventDefault();setPalette(false);setDock(d=>!d);return;}
@@ -83,7 +93,7 @@ export default function App(){
    if(isEditing(e.target)||modal||data?.prompt||drawer||e.ctrlKey||e.altKey||e.metaKey)return;
    const k=e.key.toLowerCase(),index=pending.findIndex(r=>r.request_id===gateSelected);
    if(k==='j'||k==='k'){e.preventDefault();hold.stop();const next=pending[(Math.max(0,index)+(k==='j'?1:-1)+pending.length)%pending.length];if(next){setGateSelected(next.request_id);setGateOpen(true);}}
-   else if(k==='a'&&!e.repeat&&gateSelected&&(!data?.requests.some(r=>r.status==='running')||details[gateSelected]?.operation==='request_auto_approval')&&details[gateSelected]){e.preventDefault();setGateOpen(true);void hold.begin(gateSelected);}
+   else if(k==='a'){e.preventDefault();if(!e.repeat)void approveTop();}
    else if(k==='r'&&!e.repeat&&gateSelected){e.preventDefault();reject(gateSelected);}
    else if(e.key==='Enter'&&gateSelected){e.preventDefault();onRequest(gateSelected);}
   };

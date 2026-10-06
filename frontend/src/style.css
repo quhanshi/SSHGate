@@ -87,7 +87,7 @@ body.has-pending .edge-glow{opacity:1;animation:breathe 3.2s ease-in-out infinit
 .gate-item.active{border-color:#ffffff2a;box-shadow:0 0 0 1px #ffffff12}
 .gate-item:focus-visible{box-shadow:0 0 0 1px var(--blue)}
 .gi-top{display:flex;justify-content:space-between;gap:8px;font:calc(12px * var(--font-scale)) var(--mono);color:var(--muted)}
-.gi-top .risk{letter-spacing:.06em}.write .risk{color:var(--amber)}.destructive .risk{color:var(--red)}.readonly .risk{color:var(--blue)}
+.gi-top .risk{letter-spacing:.06em}.gi-key{margin-right:6px;color:var(--text)}.write .risk{color:var(--amber)}.destructive .risk{color:var(--red)}.readonly .risk{color:var(--blue)}
 .gi-cmd{margin:7px 0 6px;font:calc(13px * var(--font-scale))/1.6 var(--mono);color:#f0eee8;white-space:pre-wrap;overflow-wrap:anywhere;max-height:7.5em;overflow:hidden}
 .gate-item.expanded .gi-cmd{max-height:none}
 .gi-cmd .danger{color:var(--red);font-weight:600;background:#ff5c7a1a}
