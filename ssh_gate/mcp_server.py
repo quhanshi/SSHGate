@@ -109,7 +109,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
 
     @mcp.tool(annotations=write)
     def request_git_command(server_id:str,args:list[str],reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
-        """Run one Git command from structured arguments, without the leading 'git', e.g. ["status","--short"] or ["pull","--ff-only","origin","main"]. cwd selects the repository; global options (-C, -c, --git-dir) are refused. The effective remote is verified right before execution. If the remote is GitHub, PREFER THE OFFICIAL GITHUB CONNECTOR for reading code, edits, commits, pushes, branches and PRs: on the server copy only status/log/diff, fetch REMOTE and pull --ff-only REMOTE BRANCH run, everything else is refused. Verified non-GitHub remotes allow the usual workflow (add/commit/push/branch/checkout/merge/rebase/tag) with local approval or a git_full grant. Read-only status/log/diff can be auto-approved by local policy. Not for kind=local servers."""
+        """Run one Git command from structured arguments, without the leading 'git', e.g. ["status","--short"] or ["pull","--ff-only","origin","main"]. cwd selects the repository; global options (-C, -c, --git-dir) are refused. The effective remote is verified right before execution. If the remote is GitHub, PREFER THE OFFICIAL GITHUB CONNECTOR for reading code, edits, commits, pushes, branches and PRs: on the server copy only status/log/diff, fetch REMOTE and pull --ff-only REMOTE BRANCH run, everything else is refused. Verified non-GitHub remotes allow the usual workflow (add/commit/push/branch/checkout/merge/rebase/tag) with local approval or a git_full grant. Read-only status/log/diff/show and bounded rev-parse/current-branch inspection can be auto-approved by local policy. Not for kind=local servers."""
         return manager.request_git_command(server_id,args,reason,client_request_id,cwd,timeout_seconds,grant_id)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
@@ -163,7 +163,8 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
 
     @mcp.tool(annotations=read)
     def get_command_history(count:int=50,server_id:str='') -> dict[str,Any]:
-        """Return newest current-runtime requests. count is 0–200; 0 returns all retained requests. server_id optionally filters one server. Includes exact submitted commands/structured arguments but not stdout/stderr."""
+        """Return newest current-runtime requests. count is 0–200; 0 returns all retained requests. server_id optionally filters one configured server. Includes exact submitted commands/structured arguments but not stdout/stderr."""
+        if server_id: manager.config.server(server_id)
         return command_history(manager,count,server_id)
 
     @mcp.tool(annotations=read)
