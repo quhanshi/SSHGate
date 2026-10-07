@@ -25,7 +25,8 @@ from .transfers import TransferStore, safe_name, zip_members
 from .ssh import SSHRunner, SSHSettings, build_remote_command, resolve_settings
 from .credentials import CredentialStore
 from .ssh_trace import MAX_CONNECTION_EVENTS
-from .authorizations import Grant, CAPABILITY_LABELS, grant_arguments, preauthorized
+from .authorizations import Grant, CAPABILITY_LABELS, PATTERN_SYNTAX, PS_PATTERN_SYNTAX, grant_arguments, preauthorized
+from .git_policy import git_args_command
 from .local_machine import LocalRunner, build_script, launch_description, local_settings
 from .local_terminal import find_shell
 from .winpath import ps_quote, windows_path, within
@@ -223,17 +224,25 @@ class ApprovalManager:
             raise ValueError("未找到 PowerShell，无法在本机执行命令")
         return shell.path
 
+    def _executable(self, payload: Payload, decision) -> str:
+        """What a grant decision runs: local commands are wrapped in the reviewed PowerShell script."""
+        return build_script(decision.executable_command, payload.cwd) if payload.workspace_roots else decision.executable_command
+
     def _submit_local(self, server, command, reason, client_request_id, cwd, timeout_seconds, session_id, session_revision, grant_id):
-        if grant_id:
-            raise ValueError("本机命令不适用临时授权，每条命令都需要本地审批")
         cwd = self._workspace_path(server, cwd, "工作目录")
         shell = self._local_shell()
-        # Every local command is reviewed by a person: PowerShell can reach paths outside the workspace.
+        executed, category = build_script(command, cwd), "local_command"
+        explanation = "本机 PowerShell 以当前 Windows 用户权限运行，可访问工作区以外的路径；每条命令都需本地审批"
+        if grant_id:
+            # Only a locally approved PowerShell pattern grant admits a local command without review.
+            with self._lock:
+                grant = self._checked_grant(grant_id, server.id, allow_retry=client_request_id)
+                decision = grant.command_decision(command, cwd, timeout_seconds)
+            executed, category, explanation = build_script(decision.executable_command, cwd), decision.category, decision.explanation
         payload = Payload(server.id, server.label, "", command, cwd, reason, timeout_seconds, launch_description(shell),
-                          local_settings(server), build_script(command, cwd), False,
-                          "本机 PowerShell 以当前 Windows 用户权限运行，可访问工作区以外的路径；每条命令都需本地审批",
+                          local_settings(server), executed, False, explanation,
                           arguments=json.dumps({"session_revision": session_revision}) if session_id else "{}",
-                          policy_category="local_command", session_id=session_id,
+                          policy_category=category, session_id=session_id, grant_id=grant_id,
                           workspace_roots=server.workspace_roots, local_shell=shell)
         return self._admit(payload, client_request_id)
 
@@ -332,14 +341,32 @@ class ApprovalManager:
             raise ValueError("授权已撤销、过期或次数已用完")
         return grant
 
-    def request_auto_approval(self, server_id, repo_path, capabilities, reason, client_request_id,
-                              ttl_seconds=1800, max_uses=50, exact_commands=None,
-                              max_timeout_seconds=300, git_remote="origin", git_branch="main") -> dict:
+    def request_pattern_approval(self, server_id, repo_path, patterns, reason, client_request_id,
+                                 ttl_seconds=1800, max_uses=50, max_timeout_seconds=300) -> dict:
+        if not isinstance(patterns, (list, tuple)) or not patterns:
+            raise ValueError("至少需要一条命令模式")
+        return self.request_auto_approval(server_id, repo_path, ["command_patterns"], reason, client_request_id,
+                                          ttl_seconds, max_uses, None, max_timeout_seconds, command_patterns=list(patterns))
+
+    def request_git_command(self, server_id, args, reason, client_request_id, cwd="", timeout_seconds=300, grant_id=""):
+        """Structured Git: arguments, not a shell line. The remote is verified again right before execution."""
         server = self.config.server(server_id)
         if server.kind == "local":
-            raise ValueError("本机工作区不支持临时授权；文件读取按本地策略放行，命令逐条审批")
+            raise ValueError("本机工作区不提供 Git 远端核验；GitHub 仓库请使用 GitHub 连接器，其他情况用 request_command 提交 PowerShell 命令并逐条审批")
+        return self.submit(server_id, git_args_command(args), reason, client_request_id, cwd, timeout_seconds, grant_id=grant_id)
+
+    def request_auto_approval(self, server_id, repo_path, capabilities, reason, client_request_id,
+                              ttl_seconds=1800, max_uses=50, exact_commands=None,
+                              max_timeout_seconds=300, git_remote="origin", git_branch="main", *, command_patterns=None) -> dict:
+        server = self.config.server(server_id)
+        local = server.kind == "local"
+        if local and list(capabilities) != ["command_patterns"]:
+            raise ValueError("本机工作区只支持 PowerShell 命令模式授权（request_pattern_approval）；其他本机命令逐条审批")
+        if local:
+            repo_path = self._workspace_path(server, repo_path, "授权目录")
         arguments = grant_arguments(repo_path, capabilities, exact_commands or [], ttl_seconds,
-                                    max_uses, max_timeout_seconds, git_remote, git_branch)
+                                    max_uses, max_timeout_seconds, git_remote, git_branch, command_patterns or [],
+                                    "powershell" if local else "posix")
         integer(max_timeout_seconds, 1, self.config.max_command_timeout_seconds, "单次执行时限")
         reason = checked_text(reason, "申请目的", multiline=True)
         if len(reason) > 2000 or not isinstance(client_request_id, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", client_request_id):
@@ -350,11 +377,15 @@ class ApprovalManager:
             command += f"\nGit：{git_remote} / {git_branch}；GitHub 仅拉取部署"
         if arguments["exact_commands"]:
             command += "\n固定命令：\n" + "\n".join(arguments["exact_commands"])
+        if arguments["command_patterns"]:
+            command += f"\n命令模式（{PS_PATTERN_SYNTAX if local else PATTERN_SYNTAX}）：\n" + "\n".join(arguments["command_patterns"])
         arguments["server_binding"] = self._server_binding(server_id)
         payload = Payload(server.id, server.label, server.ssh_target, command, arguments["repo_path"],
-                          reason, max_timeout_seconds, "本地临时授权，不执行远端命令", resolve_settings(self.config, server),
-                          readonly_eligible=preauthorized(server, self.config, arguments),
-                          readonly_explanation="批准后匹配范围的命令免逐条审批；项目代码执行不构成系统沙箱",
+                          reason, max_timeout_seconds, "本地临时授权，不执行任何命令",
+                          local_settings(server) if local else resolve_settings(self.config, server),
+                          readonly_eligible=not local and preauthorized(server, self.config, arguments),
+                          readonly_explanation=("批准后匹配模式的本机 PowerShell 命令免逐条审批；程序以当前 Windows 用户权限运行，不构成沙箱" if local else
+                                                "批准后匹配范围的命令免逐条审批；项目代码执行不构成系统沙箱"),
                           operation="request_auto_approval", arguments=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
                           policy_category="authorization", github_hosts=server.github_hosts)
         return self._authorization_view(self._admit(payload, client_request_id)["request_id"])
@@ -403,7 +434,7 @@ class ApprovalManager:
                     grant.server_binding != self._server_binding(payload.server_id)):
                 raise ValueError("执行前授权已失效，未执行远端命令")
             decision = grant.command_decision(payload.command, payload.cwd, payload.timeout_seconds)
-            if decision.executable_command != payload.executed_command:
+            if self._executable(payload, decision) != payload.executed_command:
                 raise ValueError("执行命令与授权不匹配")
 
     def submit_operation(self, server_id: str, operation: str, arguments: dict, reason: str,
@@ -662,7 +693,7 @@ class ApprovalManager:
         if kind == "temporary_grant":
             grant = self._checked_grant(request.payload.grant_id, request.payload.server_id)
             decision = grant.command_decision(request.payload.command, request.payload.cwd, request.payload.timeout_seconds)
-            if decision.executable_command != request.payload.executed_command:
+            if self._executable(request.payload, decision) != request.payload.executed_command:
                 raise ValueError("命令与临时授权不匹配")
         request.approval_kind = kind
         try:

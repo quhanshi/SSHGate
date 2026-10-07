@@ -55,7 +55,8 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertIn("No tool can approve", init.instructions)
                             tools = await session.list_tools()
                             names = {tool.name for tool in tools.tools}
-                            self.assertEqual({"list_servers", "request_auto_approval", "get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
+                            self.assertIn("PREFER THE OFFICIAL GITHUB CONNECTOR", init.instructions)
+                            self.assertEqual({"list_servers", "request_auto_approval", "request_pattern_approval", "request_git_command","get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
                             servers = await session.call_tool("list_servers", {})
                             self.assertFalse(servers.isError)
                             self.assertTrue(servers.structuredContent["approval_required_for_all_commands"])
@@ -71,6 +72,10 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertTrue(replaced.isError)
                             bypass = await session.call_tool("approve_command", {"request_id": view["request_id"]})
                             self.assertTrue(bypass.isError)
+                            raw_git = await session.call_tool("request_command", {**args, "command": "git status", "client_request_id": "raw-git"})
+                            self.assertTrue(raw_git.isError)
+                            self.assertIn("request_git_command", raw_git.content[0].text)
+                            self.assertIn("GitHub", raw_git.content[0].text)
                             self.assertFalse(calls)
                             # Simulate the trusted local Windows GUI click; never an MCP tool call.
                             manager.local_approve(view["request_id"], view["digest"])

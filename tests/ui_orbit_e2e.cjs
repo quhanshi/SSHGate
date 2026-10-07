@@ -120,5 +120,13 @@ const meta={server_version:'SSH-2.0-OpenSSH_9.9',client_version:'SSH-2.0-paramik
   await start();await emit('connected','connected',meta,{finish:'sftp_failed'});await state('connected');await page.getByText('SSH 握手已成功，后续连接诊断未通过；请查看请求详情。').waitFor();
   await page.getByRole('button',{name:'请求详情 ↗',exact:true}).click();await page.locator('#request-detail .connection-telemetry summary').waitFor();await page.locator('#request-detail .connection-telemetry summary').click();assert(await page.locator('#request-detail [data-event="connected"]').isVisible());
  });
+ await check('a later command hides the finished connection panel and shows the prompt history again',async()=>{
+  await page.keyboard.press('Escape');assert.equal(await page.locator('.orbit-panel').count(),1);
+  // A read-only command on the already authenticated session: shown while connecting, hidden once it reuses the session.
+  await rpc('submit_local',['dev','pwd','连接面板隐藏测试','',300]);await state('active');
+  await rpc('fixture_advance',[{event:'connection_reused',stage:'connected',data:meta,attempt:0,finish:'succeeded'}]);
+  await page.waitForFunction(()=>!document.querySelector('.orbit-panel')&&getComputedStyle(document.querySelector('#prompt-history')).display!=='none');
+  assert((await page.locator('#prompt-history').textContent()).includes('pwd'));
+ });
  assert.deepEqual(errors,[]);fs.writeFileSync(path.join(output,'ui-orbit-result.json'),JSON.stringify({passed:checks.length,checks,page_errors:errors,engine:await browser.version()},null,2));console.log('ORBIT UI TESTS PASSED '+checks.length);
 })().catch(async e=>{console.error(e);if(page){await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});fs.writeFileSync(path.join(output,'failure-details.json'),JSON.stringify({checks,errors,message:String(e)},null,2));}process.exitCode=1;}).finally(async()=>{if(browser)await browser.close();child.stdin.end();setTimeout(()=>child.kill(),1000).unref();if(fs.existsSync(html))fs.unlinkSync(html);});
