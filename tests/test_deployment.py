@@ -21,6 +21,7 @@ class DeploymentBuilderTests(unittest.TestCase):
         self.assertIn("checkout --detach " + "a" * 40, script)
         self.assertIn("SSH_GATE_DEPLOY_HEAD", script)
         self.assertIn("core.hooksPath=/dev/null", script)
+        self.assertIn("GIT_CONFIG_GLOBAL=/dev/null", script)
 
     def test_non_github_or_ambiguous_targets_are_rejected(self):
         bad = [
