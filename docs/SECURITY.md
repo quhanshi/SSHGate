@@ -70,7 +70,7 @@ MCP 调用方没有可信的对话身份；不接受自报 chat ID 作为隔离�
 
 `inspect_repository` 读取生效的 fetch/push URL（含 `insteadOf/pushInsteadOf` 改写），解析简单 SSH Host/HostName 别名，返回主机和类型，不返回 URL 凭据。含 Include/Match、无法解析的 SSH 别名或混合远端会要求核对；本地 `github_hosts` 可明确登记 GitHub Enterprise 主机或 GitHub 别名。
 
-受支持的直接 Git 命令在执行前重复核验远端。GitHub 服务器副本仅受限检查和指定远端的 fetch/快进 pull；首次 clone 单独审批，代码开发使用 GitHub 工具。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局路径/配置覆盖和组合命令不作为直接 Git 操作执行。
+受支持的直接 Git 命令在执行前重复核验远端。GitHub 服务器副本仅受限检查和指定远端的 fetch/快进 pull；代码开发使用 GitHub 工具。首次部署使用 `bootstrap_repository` 时只接受已确认的 GitHub URL 和空/不存在的规范化绝对目标路径，并可绑定完整提交 SHA。该流程关闭仓库 hooks/fsmonitor，并通过 `GIT_CONFIG_NOSYSTEM=1` 与 `GIT_CONFIG_GLOBAL=/dev/null` 阻止 system/global Git 配置把 URL 重写到另一远端；SSH `Host`/`ProxyJump` 配置仍由 OpenSSH 处理。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局路径/配置覆盖和组合命令不作为直接 Git 操作执行。
 
 远端账号配置和经本地批准的项目程序必须可信。任意脚本、Git filter、测试或构建程序可能调用 Git 或修改目录外资源；这里的直接 Git 策略不声称拦截其内部行为。真正限制这些副作用需要远端容器、账号和 OS 权限隔离。
 
@@ -154,7 +154,7 @@ HTTPS 诊断始终校验证书，没有“跳过 TLS 校验”的选项。
 - 自动/人工准入类型
 - 终止相关事件
 
-它不应记录密码、私钥内容、API Key 或完整命令输出。日志目录仍属于本地敏感数据，应按普通运维日志处理。
+它不应记录密码、私钥内容、API Key、完整命令或完整命令输出。`get_command_history` 为中断恢复返回当前进程内存中的原始命令/结构化参数，但这些内容不会写回 `audit.jsonl`，应用重启后也不会从审计日志恢复。调用方仍不应把凭据放进命令参数。日志目录仍属于本地敏感数据，应按普通运维日志处理。
 
 ## 11. 不提供的保证
 
