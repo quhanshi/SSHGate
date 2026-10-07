@@ -229,6 +229,56 @@ class AuthorizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             replacement.submit('s', 'printf hello', 'test', 'old', '/srv/project', grant_id=grant)
 
+    def pattern_grant(self, patterns, key='patterns', **kwargs):
+        proposal = self.manager.request_pattern_approval('s', '/srv/project', patterns, 'Run project scripts', key, **kwargs)
+        self.assertEqual('pending_approval', proposal['status'])  # never preauthorized
+        return self.approve(proposal)
+
+    def test_pattern_grant_runs_matching_commands_without_further_approval(self):
+        patterns = ['npm run *', 'make test-*', '/srv/project/scripts/check.sh ...']
+        grant = self.pattern_grant(patterns)
+        command = self.manager.get(self.manager.grants[grant].request_id)['command']
+        self.assertIn('npm run *', command)
+        self.assertIn('命令模式', command)
+        for i, line in enumerate(['npm run build', 'make test-unit', '/srv/project/scripts/check.sh',
+                                  '/srv/project/scripts/check.sh fast src/app']):
+            with self.subTest(line=line):
+                view = self.manager.submit('s', line, 'pattern', f'p{i}', '/srv/project/web', grant_id=grant)
+                self.assertEqual('succeeded', self.wait(view)['status'])
+        self.assertEqual('exec /usr/bin/npm run build', self.calls[0].executed_command)
+        self.assertEqual('exec /srv/project/scripts/check.sh fast src/app', self.calls[-1].executed_command)
+        self.assertEqual(4, self.manager.grants[grant].uses)
+        self.assertEqual(patterns, self.manager.list_auto_approvals()['authorizations'][0]['command_patterns'])
+
+    def test_pattern_wildcards_cannot_introduce_options_paths_or_shell(self):
+        grant = self.pattern_grant(['npm run *', 'cat **', 'pytest --maxfail=* ...'])
+        for line in ['npm run', 'npm run a b', 'npm run --prefix=/', 'npm run -x', 'npm run ../x', 'npm run ~',
+                     'npm exec x', 'cat /etc/shadow', 'cat ../../etc/passwd', 'cat a/../../x', 'cat ~/.ssh/id_rsa',
+                     'cat x --unsafe', 'npm run a;id', 'npm run $(id)', 'npm run a|cat', 'npm run "a b" c',
+                     'pytest --maxfail=/etc', '/usr/bin/npm run x', 'pytest --maxfail=1 --rootdir=/']:
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                self.manager.submit('s', line, 'pattern', 'bad-' + str(abs(hash(line))), '/srv/project', grant_id=grant)
+        view = self.manager.submit('s', 'cat src/deep/file.txt', 'ok', 'deep', '/srv/project', grant_id=grant)
+        self.assertEqual('succeeded', self.wait(view)['status'])
+        view = self.manager.submit('s', 'pytest --maxfail=2 tests/unit', 'ok', 'tail', '/srv/project', grant_id=grant)
+        self.assertEqual('succeeded', self.wait(view)['status'])
+        self.assertEqual(['cat src/deep/file.txt', 'pytest --maxfail=2 tests/unit'], [c.command for c in self.calls])
+        with self.assertRaises(ValueError):
+            self.manager.submit('s', 'npm run build', 'outside', 'outside', '/srv/other', grant_id=grant)
+
+    def test_unsafe_patterns_are_refused_before_any_approval(self):
+        for pattern in ['* x', 'np* run', 'git *', 'sudo npm *', 'bash -c *', 'env *', 'nohup *', 'timeout 5 npm *',
+                        'busybox *', '/usr/bin/strace *', 'sed *', 'awk *', 'npm run * | cat', 'npm $(id)', 'npm -*',
+                        'npm --pre*=x', 'npm ... run', 'cat ../*', 'python -c *', 'rm *', './scripts/x.sh *']:
+            with self.subTest(pattern=pattern), self.assertRaises(ValueError):
+                self.manager.request_pattern_approval('s', '/srv/project', [pattern], 'bad', 'bad-' + str(abs(hash(pattern))))
+        with self.assertRaises(ValueError):
+            self.manager.request_pattern_approval('s', '/srv/project', [], 'empty', 'empty')
+        with self.assertRaises(ValueError):
+            self.manager.request_auto_approval('s', '/srv/project', ['command_patterns'], 'no list', 'no-list')
+        self.assertEqual(0, len(self.manager.list_local()))
+        self.assertFalse(self.calls)
+
     def test_shell_wrappers_inline_programs_and_git_are_not_exact_grants(self):
         for command in ['printf ok; rm x', 'printf ok | cat', 'printf $(id)', 'bash -c pwd',
                         'sudo ls', 'rm -rf /srv/project', 'python -c print(1)', 'git push origin main']:
