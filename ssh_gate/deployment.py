@@ -64,14 +64,14 @@ def build_bootstrap_command(repo_url: str, target_path: str, branch: str = "main
         '  [ -d "$target" ] || { echo "SSHGate: target exists and is not a directory" >&2; exit 64; }',
         '  [ -z "$(/usr/bin/find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ] || { echo "SSHGate: target directory is not empty" >&2; exit 64; }',
         "fi",
-        f'/usr/bin/git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --progress --branch {q(branch)} --single-branch -- {q(repo_url)} "$target"',
+        f'GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git -c core.hooksPath=/dev/null -c core.fsmonitor=false clone --progress --branch {q(branch)} --single-branch -- {q(repo_url)} "$target"',
     ]
     if expected_sha:
         script.append(
-            f'/usr/bin/git -C "$target" -c core.hooksPath=/dev/null -c core.fsmonitor=false checkout --detach {q(expected_sha)}'
+            f'GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git -C "$target" -c core.hooksPath=/dev/null -c core.fsmonitor=false checkout --detach {q(expected_sha)}'
         )
     script.extend([
-        'head=$(/usr/bin/git -C "$target" --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse HEAD)',
+        'head=$(GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git -C "$target" --no-pager -c core.hooksPath=/dev/null -c core.fsmonitor=false rev-parse HEAD)',
     ])
     if expected_sha:
         script.append(
