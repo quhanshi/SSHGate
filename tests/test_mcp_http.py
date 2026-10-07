@@ -56,7 +56,7 @@ class MCPHTTPTests(unittest.TestCase):
                             tools = await session.list_tools()
                             names = {tool.name for tool in tools.tools}
                             self.assertIn("PREFER THE OFFICIAL GITHUB CONNECTOR", init.instructions)
-                            self.assertEqual({"list_servers", "request_auto_approval", "request_pattern_approval", "request_git_command","get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
+                            self.assertEqual({"list_servers", "request_auto_approval", "request_pattern_approval", "request_git_command", "bootstrap_repository", "get_command_history", "get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
                             servers = await session.call_tool("list_servers", {})
                             self.assertFalse(servers.isError)
                             self.assertTrue(servers.structuredContent["approval_required_for_all_commands"])
@@ -96,7 +96,7 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertEqual('pending_approval', application.structuredContent['status'])
                             proposal_id = application.structuredContent['request_id']
                             manager.local_approve(proposal_id, manager.get(proposal_id)['digest'])
-                            granted = await session.call_tool('get_auto_approval_status', {'request_id': proposal_id})
+                            granted = await session.call_tool('get_auto_approval_status', {'request_id': proposal_id, 'wait_seconds': 1})
                             self.assertEqual('granted', granted.structuredContent['status'])
                             grant_id = granted.structuredContent['authorization']['grant_id']
                             authorized_args = {'server_id': 'server', 'command': 'printf hello',
@@ -121,6 +121,12 @@ class MCPHTTPTests(unittest.TestCase):
                             result = await session.call_tool("get_command_status", {"request_id": denied.structuredContent["request_id"]})
                             self.assertEqual("denied", result.structuredContent["status"])
                             self.assertEqual(["pwd", "printf hello"], calls)
+                            history = await session.call_tool("get_command_history", {"count": 0, "server_id": "server"})
+                            self.assertFalse(history.isError)
+                            items = history.structuredContent["items"]
+                            self.assertEqual("server", history.structuredContent["server_id"])
+                            self.assertTrue(any(item["command"] == "pwd" and item["status"] == "succeeded" for item in items))
+                            self.assertTrue(any(item["client_request_id"] == "http-denied" and item["status"] == "denied" for item in items))
                     async with httpx.AsyncClient(trust_env=False) as client:
                         health = await client.get(url + "/healthz")
                         self.assertEqual("ssh-gate", health.json()["service"])
