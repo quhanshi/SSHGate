@@ -55,7 +55,7 @@ class MCPHTTPTests(unittest.TestCase):
                             self.assertIn("No tool can approve", init.instructions)
                             tools = await session.list_tools()
                             names = {tool.name for tool in tools.tools}
-                            self.assertEqual({"list_servers", "request_auto_approval", "get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
+                            self.assertEqual({"list_servers", "request_auto_approval", "get_auto_approval_status", "list_auto_approvals", "revoke_auto_approval", "inspect_repository", "bootstrap_repository", "get_command_history", "request_command", "get_command_status", "cancel_pending_request", "terminate_command", "read_command_output", "list_directory", "stat_path", "read_file", "find_files", "test_connection", "download_file", "download_directory", "read_download_chunk", "begin_upload", "append_upload_chunk", "upload_file", "upload_directory", "create_session", "update_session", "exec_in_session", "list_sessions", "close_session"}, names)
                             servers = await session.call_tool("list_servers", {})
                             self.assertFalse(servers.isError)
                             self.assertTrue(servers.structuredContent["approval_required_for_all_commands"])
@@ -116,6 +116,11 @@ class MCPHTTPTests(unittest.TestCase):
                             result = await session.call_tool("get_command_status", {"request_id": denied.structuredContent["request_id"]})
                             self.assertEqual("denied", result.structuredContent["status"])
                             self.assertEqual(["pwd", "printf hello"], calls)
+                            history = await session.call_tool("get_command_history", {"mode": "all", "limit": 20})
+                            self.assertFalse(history.isError)
+                            items = history.structuredContent["items"]
+                            self.assertTrue(any(item["command"] == "pwd" and item["status"] == "succeeded" for item in items))
+                            self.assertTrue(any(item["client_request_id"] == "http-denied" and item["status"] == "denied" for item in items))
                     async with httpx.AsyncClient(trust_env=False) as client:
                         health = await client.get(url + "/healthz")
                         self.assertEqual("ssh-gate", health.json()["service"])
