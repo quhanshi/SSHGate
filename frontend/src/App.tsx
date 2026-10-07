@@ -31,7 +31,13 @@ export default function App(){
  const onRequest=useCallback((id:string)=>{setSelected(id);openDrawer('requests');},[openDrawer]);
  const onConnect=useCallback((id:string,server:string)=>{setSelected(id);setFocus(server);openDrawer(null);},[openDrawer]);
  const orbits=useMemo(()=>connectionOrbits(data?.requests||[],details),[data?.requests,details]);
- const orbit=(focus?orbits[focus]:undefined)||Object.values(orbits).find(o=>o.outcome==='active')||Object.values(orbits)[0];
+ // The SSH panel is for connecting: shown while a connection is being set up, and for the result of the
+ // newest request only. Once another request follows, or a command just reused a session, the prompt history returns.
+ const candidate=(focus?orbits[focus]:undefined)||Object.values(orbits).find(o=>o.outcome==='active')||Object.values(orbits)[0];
+ // A request that is starting but has not reported connection progress yet does not displace the panel.
+ const starting=(r:{request_id:string;status:string})=>['running','queued_readonly','queued_authorized'].includes(r.status)&&!details[r.request_id]?.connection_events?.length;
+ const newest=data?.requests.filter(r=>!starting(r)).reduce<typeof data.requests[number]|undefined>((a,r)=>!a||Date.parse(r.created_at)>Date.parse(a.created_at)?r:a,undefined);
+ const orbit=candidate&&(candidate.outcome==='active'||(candidate.request.request_id===newest?.request_id&&(candidate.outcome!=='reused'||candidate.request.operation==='test_connection')))?candidate:undefined;
  const orbitServer=data?.servers.find(s=>s.id===orbit?.request.server_id);
  const animateLeave=useCallback((id:string,kind:string)=>{setLeaving(prev=>({...prev,[id]:kind}));leaveTimers.current.push(setTimeout(()=>setLeaving(prev=>{const next={...prev};delete next[id];return next;}),450));},[]);
  const approved=useCallback(async(id:string)=>{animateLeave(id,'approved');notify('请求已批准');await refresh();},[animateLeave,notify,refresh]);
