@@ -10,13 +10,17 @@ from starlette.responses import JSONResponse
 
 from . import __version__
 from .core import ApprovalManager
+from .deployment import build_bootstrap_command
+from .history import command_history
 from .readonly import BINARIES
 
 INSTRUCTIONS = """SSH Gate local SSH access connector. Call list_servers first.
 For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
 It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status;
-pass the returned grant_id to request_command. GitHub repositories are deployment copies on servers:
-use GitHub tools for repository development; SSH Gate allows inspection and deployment pulls only.
+pass the returned grant_id to request_command. get_auto_approval_status supports a bounded long-poll.
+GitHub repositories are deployment copies on servers: use GitHub tools for repository development.
+Use bootstrap_repository for a first clone into an empty path; existing copies use inspection/fetch/ff-only pull.
+Use get_command_history(mode="recent") after a chat interruption, or mode="all" for paged runtime history.
 For other verified Git remotes use the locally approved Git workflow. Unknown/mixed remotes need verification.
 Passwords, private-key passphrases and host-key confirmations are handled only in the Windows WebView.
 Use structured SFTP tools for directory listing, bounded file search, stat and segmented reads.
@@ -94,9 +98,14 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
                                               max_uses,exact_commands,max_timeout_seconds,git_remote,git_branch)
 
     @mcp.tool(annotations=read)
-    def get_auto_approval_status(request_id:str) -> dict[str,Any]:
-        """Read a grant application's pending/granted/denied/expired/revoked/exhausted state and effective bounds."""
-        return manager.get_auto_approval_status(request_id)
+    async def get_auto_approval_status(request_id:str,wait_seconds:int=0) -> dict[str,Any]:
+        """Read a grant application's state and effective bounds. Optionally long-poll 0–20 seconds while it is still pending."""
+        if type(wait_seconds) is not int or not 0<=wait_seconds<=20: raise ValueError('wait_seconds 必须在 0–20 之间')
+        deadline=asyncio.get_running_loop().time()+wait_seconds
+        while True:
+            view=manager.get_auto_approval_status(request_id)
+            if view['status'] not in {'pending_approval','queued_readonly','queued_authorized'} or asyncio.get_running_loop().time()>=deadline: return view
+            await asyncio.sleep(.2)
 
     @mcp.tool(annotations=read)
     def list_auto_approvals() -> dict[str,Any]:
@@ -112,6 +121,22 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def inspect_repository(server_id:str,repo_path:str,client_request_id:str) -> dict[str,Any]:
         """Request bounded inspection of the repository root and effective fetch/push remote providers. Git URL rewrites and simple SSH aliases are resolved; credentials/URLs are omitted. Poll request_id for result."""
         return manager.submit_operation(server_id,'inspect_repository',{'path':repo_path},'核对 Git 仓库与实际远端',client_request_id,timeout_seconds=60)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=True))
+    def bootstrap_repository(server_id:str,repo_url:str,target_path:str,reason:str,client_request_id:str,
+                             branch:str='main',expected_sha:str='',timeout_seconds:int=900) -> dict[str,Any]:
+        """First GitHub deployment into a non-existent or empty absolute path. Validates the provider/branch/SHA, disables repository hooks, shows clone progress, and optionally checks out an exact full SHA. Always requires one local approval."""
+        server=manager.config.server(server_id)
+        if server.kind=='local': raise ValueError('本机工作区不使用 SSH 部署 bootstrap')
+        plan=build_bootstrap_command(repo_url,target_path,branch,expected_sha,server.github_hosts)
+        view=manager.submit(server_id,plan['command'],reason,client_request_id,server.default_cwd,timeout_seconds)
+        return {**view,'deployment':{k:v for k,v in plan.items() if k!='command'}}
+
+    @mcp.tool(annotations=read)
+    def get_command_history(mode:str='recent',server_id:str='',limit:int=50,before_request_id:str='',
+                            activity_gap_seconds:int=900) -> dict[str,Any]:
+        """Recover current-runtime request history. recent returns the latest continuous activity batch (15-minute gap by default); all paginates every retained request. Includes exact submitted commands/structured arguments but not stdout/stderr."""
+        return command_history(manager,mode,server_id,limit,before_request_id,activity_gap_seconds)
 
     @mcp.tool(annotations=read)
     async def get_command_status(request_id:str,output_offset:int=0,output_limit:int=16384,wait_seconds:int=0) -> dict[str,Any]:
