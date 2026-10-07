@@ -11,7 +11,7 @@ SSH Gate 是一个运行在 Windows 本机的 SSH 访问网关。它通过 **Ope
 - **命令执行**：异步提交、状态查询、stdout/stderr 增量读取、受控超时和运行中终止；支持读取当前运行期历史以恢复中断的工作。
 - **自动授权策略**：可按服务器配置只读类别与绝对目录范围；不满足规则的操作进入本地审批。
 - **临时免逐条审批**：ChatGPT 申请服务器、目录、能力、期限和次数范围；本地预授权或一次批准后取得 `grant_id`，可随时撤销。
-- **Git 远端策略**：GitHub 服务器副本只检查状态和拉取部署，开发使用 GitHub 工具；已核验的其他远端可申请 Git 开发权限。
+- **Git 远端策略**：GitHub 服务器副本只检查状态和拉取部署，开发使用 GitHub 工具；首次部署可用结构化 `bootstrap_repository` 克隆到空目录并可校验精确 SHA；已核验的其他远端可申请 Git 开发权限。
 - **SFTP 文件操作**：目录列表、属性、搜索、分段读取、单文件/目录下载、单文件/ZIP 目录上传和 SHA256 校验。
 - **受控会话**：保存 cwd 与非敏感环境变量上下文；每条命令仍为独立 shell，不提供交互式 PTY。
 - **连接诊断**：记录 DNS、TCP、SSH 握手、密钥交换、主机核验和认证事件，支持失败原因与逐跳查看。
@@ -100,7 +100,7 @@ Build-App.cmd
 | --- | --- |
 | `read_fs` | ls/ll/cat/head/tail/pwd/wc/grep/find/stat/du，以及结构化只读文件工具 |
 | `diagnostics` | df/ps/free/uname、连接和默认目录诊断 |
-| `git_read` | 受限参数的 git status/log/diff |
+| `git_read` | 受限参数的 git status/log/diff/show，以及精确白名单的 rev-parse/当前分支查询 |
 | `docker_read` | 受限参数的 docker ps/logs/inspect |
 | `python_tests` | 显式授权范围内的受限 pytest；测试代码本身仍可能写文件 |
 | `manual_only` | 仅人工审批 |
@@ -109,7 +109,7 @@ Build-App.cmd
 
 ### 临时授权
 
-调用 `request_auto_approval` 指定 `server_id`、绝对 `repo_path`、`capabilities`、目的和唯一 `client_request_id`。申请只创建本地授权请求，不执行 SSH 命令。查询 `get_auto_approval_status`；状态为 `granted` 后，在 `request_command` 的 `grant_id` 参数中使用返回的授权。
+调用 `request_auto_approval` 指定 `server_id`、绝对 `repo_path`、`capabilities`、目的和唯一 `client_request_id`。申请只创建本地授权请求，不执行 SSH 命令。查询 `get_auto_approval_status`；可用 `wait_seconds=0–20` 做 bounded long-poll，状态为 `granted` 后，在 `request_command` 的 `grant_id` 参数中使用返回的授权。
 
 | 能力 | 允许范围 |
 | --- | --- |
@@ -136,7 +136,13 @@ Git 有单独的工具 `request_git_command`：`args` 传结构化参数（不�
 
 先用 `inspect_repository` 获取真实仓库根和生效的 fetch/push 远端类型；执行前还会重新核验 URL 改写和简单 SSH Host 别名。GitHub.com、`ssh.github.com`、`*.ghe.com` 和本地配置的 `github_hosts` 采用部署策略。自建 GitHub Enterprise 主机或明确的 GitHub SSH 别名应在连接中登记。
 
-GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服务器上只允许受限状态检查、明确远端的 fetch 和快进 pull，首次 clone 单独审批。不自动 stash、reset 或合并分叉历史。其他远端确认后可进行完整 Git 工作流；未知或混合远端拒绝完整 Git 写操作。直接 Git 命令使用 `cwd` 参数，不接受 `git -C`、全局配置覆盖或组合 shell 包装。任意已批准脚本和受信任项目代码仍有远端账号权限；这条策略不是对其内部行为的 OS 拦截器。
+GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服务器上只允许受限状态检查、明确远端的 fetch 和快进 pull。首次部署使用 `bootstrap_repository`：只接受已确认的 GitHub HTTPS/SSH URL、规范化绝对目标路径和合法 branch，目标必须不存在或为空；SSH URL 会先通过 `ssh -G` 核对生效的 HostName，避免 SSH 配置把 GitHub 名称重定向到未批准主机。可选 `expected_sha` 会在 clone 后切到该完整 SHA 并再次核验 HEAD；system/global Git config 与 hooks/fsmonitor 在该流程中关闭。不自动 stash、reset 或合并分叉历史。其他远端确认后可进行完整 Git 工作流；未知或混合远端拒绝完整 Git 写操作。直接 Git 命令使用 `cwd` 参数，不接受 `git -C`、全局配置覆盖或组合 shell 包装。任意已批准脚本和受信任项目代码仍有远端账号权限；这条策略不是对其内部行为的 OS 拦截器。
+
+## 中断恢复与命令历史
+
+`get_command_history(count=50, server_id="")` 返回当前 SSH Gate 进程中最新的请求记录。按条数取最近记录：`count=50` 表示最近 50 条，`count=0` 表示返回当前进程保留的全部记录；指定 `server_id` 时只返回该服务器的记录。结果包含原始命令/结构化参数、cwd、目的、审批类型、状态、退出码、结构化 result 和终止信息，但不直接返回 stdout/stderr。
+
+该接口用于聊天刷新、工具调用中断后恢复操作进度，不把 ChatGPT 自报的会话 ID 当作权限边界。完整命令只保存在当前进程内，应用重启后不会从审计日志恢复；持久化 `audit.jsonl` 仍只记录摘要和状态。调用方仍不应把凭据放进命令参数。
 
 ## 文件与传输
 
@@ -162,14 +168,14 @@ GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服�
 
 不要把 SSH 密码、Token 等秘密放入会话环境变量。
 
-## MCP 工具（28 个）
+## MCP 工具（32 个）
 
 | 类别 | 工具 |
 | --- | --- |
 | 服务器 | `list_servers`, `test_connection` |
 | 临时授权 | `request_auto_approval`, `request_pattern_approval`, `get_auto_approval_status`, `list_auto_approvals`, `revoke_auto_approval` |
-| Git | `request_git_command`, `inspect_repository` |
-| 命令 | `request_command`, `get_command_status`, `read_command_output`, `cancel_pending_request`, `terminate_command` |
+| Git | `request_git_command`, `inspect_repository`, `bootstrap_repository` |
+| 命令 / 恢复 | `request_command`, `get_command_status`, `read_command_output`, `get_command_history`, `cancel_pending_request`, `terminate_command` |
 | 文件系统 | `list_directory`, `stat_path`, `read_file`, `find_files` |
 | 下载 | `download_file`, `download_directory`, `read_download_chunk` |
 | 上传 | `begin_upload`, `append_upload_chunk`, `upload_file`, `upload_directory` |
