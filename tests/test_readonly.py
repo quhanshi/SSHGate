@@ -18,7 +18,9 @@ class ReadOnlyParsingTests(unittest.TestCase):
     def test_common_readonly_commands(self):
         for command in ("ls", "ls -lah /tmp", "ll /tmp", "cat '/tmp/a b.txt'", "tail -n 50 /var/log/app.log",
                         "head -n 10 /tmp/file", "pwd", "wc -l /tmp/file", "grep -n error /tmp/file",
-                        "/bin/cat /tmp/file", "/usr/bin/ls -a", "cat ~/file"):
+                        "/bin/cat /tmp/file", "/usr/bin/ls -a", "cat ~/file",
+                        "git log -1 --oneline --decorate", "git show --stat HEAD",
+                        "git rev-parse HEAD", "git rev-parse --show-toplevel", "git branch --show-current"):
             with self.subTest(command=command):
                 self.assertTrue(readonly_command(command).allowed)
 
@@ -40,7 +42,8 @@ class ReadOnlyParsingTests(unittest.TestCase):
     def test_non_readonly_tools_and_alias_paths_are_manual(self):
         for command in ("rm file", "touch file", "sed -i s/a/b/ file", "awk 'BEGIN{system(\"touch x\")}'",
                         "find . -exec rm x +", "python script.py", "curl example.org", "sh -c ls", "sudo ls",
-                        "env ls", "git reset --hard", "/tmp/ls", "/bin/../bin/ls", "X=1 ls", "cat", "tail", "ls '"):
+                        "env ls", "git reset --hard", "git rev-parse --verify HEAD", "git branch -a",
+                        "/tmp/ls", "/bin/../bin/ls", "X=1 ls", "cat", "tail", "ls '"):
             with self.subTest(command=command):
                 self.assertFalse(readonly_command(command).allowed)
 

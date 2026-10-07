@@ -4,6 +4,9 @@
 
 - 新增有目录、能力、期限、次数和执行超时范围的临时授权申请、查询、使用与撤销；仅本地预授权或本地审批可以授予，应用重启后失效。
 - 新增实际 Git 远端核验：GitHub 副本只检查状态、拉取部署；其他已核验远端支持批准后的 Git 工作流。
+- 新增 `bootstrap_repository`：首次 GitHub 部署可安全克隆到空目录，可绑定完整 SHA，并核对 SSH 生效 HostName、隔离 system/global Git 配置。
+- 新增 `get_command_history`：按条数读取当前运行期命令历史，`count=0` 返回全部，并支持按 `server_id` 过滤。
+- `get_auto_approval_status` 支持 0–20 秒 bounded long-poll；Git 只读检查补充 show、受限 rev-parse 与当前分支查询。
 - 审批期限收敛为最多 1 分钟，按住确认统一为 0.5 秒；按钮倒计时从右向左消退，与按住进度相反。
 - 主界面按 A 立即批准审批栏最上面一条（不再需要按住）；焦点在输入框、终端、对话框或抽屉中时不响应。
 - Git 单独成为 MCP 工具 `request_git_command`（结构化参数）；`request_command` 中的 git 命令改为拒绝并提示。MCP 说明要求远端为 GitHub 时优先使用官方 GitHub 连接器，`inspect_repository` 对 GitHub 远端返回同样的建议。

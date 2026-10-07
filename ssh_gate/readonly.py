@@ -91,8 +91,14 @@ GIT_FLAGS={"--short", "--branch", "--porcelain", "--untracked-files", "--ignored
 GIT_VALUES={"--max-count", "--since", "--until", "--after", "--before", "--author", "--committer", "--grep", "--format", "--pretty", "--diff-filter", "--unified"}
 
 def _git(args):
-    if not args or args[0] not in {"status", "log", "diff"}: return False
-    sub=args[0]; i=1; paths=False
+    if not args: return False
+    sub=args[0]
+    if sub == "rev-parse":
+        return len(args) == 2 and args[1] in {"HEAD", "--show-toplevel", "--is-inside-work-tree", "--show-prefix"}
+    if sub == "branch":
+        return args == ["branch", "--show-current"]
+    if sub not in {"status", "log", "diff", "show"}: return False
+    i=1; paths=False
     while i < len(args):
         a=args[i]
         if paths: i+=1; continue
@@ -110,10 +116,10 @@ def _git(args):
             i+=1
             if i >= len(args) or not args[i].isdigit(): return False
         elif re.fullmatch(r"-(?:n|U)[0-9]+", a): pass
+        elif sub in {"log", "show"} and re.fullmatch(r"-[0-9]+", a): pass
         else: return False
         i+=1
     return True
-
 def scoped_read_paths(command: str) -> list[str]:
     """Path operands, including paths carried in options; refuse recursive link traversal."""
     argv = shlex.split(command)
@@ -202,5 +208,5 @@ def readonly_command(command: str) -> ReadOnlyDecision:
     prefix=f"exec {BINARIES[name]}"
     if name == "git":
         prefix="exec /usr/bin/env GIT_OPTIONAL_LOCKS=0 GIT_CONFIG_COUNT=0 GIT_CONFIG_NOSYSTEM=1 /usr/bin/git --no-pager -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false"
-        rendered.insert(1, "--no-ext-diff --no-textconv" if args[0] in {"diff", "log"} else "")
+        rendered.insert(1, "--no-ext-diff --no-textconv" if args[0] in {"diff", "log", "show"} else "")
     return ReadOnlyDecision(True, prefix+" "+" ".join(rendered) if rendered else prefix, f"只读类别 {category}：固定路径与参数级白名单", category)

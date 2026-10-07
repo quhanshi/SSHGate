@@ -12,17 +12,22 @@ from starlette.responses import JSONResponse
 
 from . import __version__
 from .core import ApprovalManager
+from .deployment import build_bootstrap_command
+from .history import command_history
 from .readonly import BINARIES
 
 INSTRUCTIONS = """SSH Gate local SSH access connector. Call list_servers first.
 For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
-It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status;
-pass the returned grant_id to request_command. For a family of similar commands (npm run *, make test-*)
-use request_pattern_approval: one local approval, then matching commands run directly within its bounds.
-Git: use request_git_command (structured args), not request_command. Before Git work call inspect_repository.
+It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status
+(with wait_seconds up to 20 seconds) and pass the returned grant_id to request_command. For a family of similar
+commands (npm run *, make test-*) use request_pattern_approval: one local approval, then matching commands run
+directly within its bounds. Git: use request_git_command (structured args), not request_command. Before Git work
+call inspect_repository. For the first GitHub deployment into an empty path use bootstrap_repository.
+After an interrupted chat/tool run use get_command_history; count=0 returns all retained current-runtime requests
+and server_id optionally filters one configured server.
 IF THE REMOTE IS GITHUB, PREFER THE OFFICIAL GITHUB CONNECTOR over commands for reading code, edits, commits,
 pushes, branches, issues and PRs. Server copies of GitHub repositories are deployment copies: SSH Gate allows
-only status/log/diff, fetch and pull --ff-only there. Use the GitHub connector even when a command would be faster.
+only bounded read inspection (status/log/diff/show/rev-parse/current branch), fetch and pull --ff-only there. Use the GitHub connector even when a command would be faster.
 For other verified Git remotes use the locally approved Git workflow. Unknown/mixed remotes need verification.
 Passwords, private-key passphrases and host-key confirmations are handled only in the Windows WebView.
 Use structured SFTP tools for directory listing, bounded file search, stat and segmented reads.
@@ -104,7 +109,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
 
     @mcp.tool(annotations=write)
     def request_git_command(server_id:str,args:list[str],reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
-        """Run one Git command from structured arguments, without the leading 'git', e.g. ["status","--short"] or ["pull","--ff-only","origin","main"]. cwd selects the repository; global options (-C, -c, --git-dir) are refused. The effective remote is verified right before execution. If the remote is GitHub, PREFER THE OFFICIAL GITHUB CONNECTOR for reading code, edits, commits, pushes, branches and PRs: on the server copy only status/log/diff, fetch REMOTE and pull --ff-only REMOTE BRANCH run, everything else is refused. Verified non-GitHub remotes allow the usual workflow (add/commit/push/branch/checkout/merge/rebase/tag) with local approval or a git_full grant. Read-only status/log/diff can be auto-approved by local policy. Not for kind=local servers."""
+        """Run one Git command from structured arguments, without the leading 'git', e.g. ["status","--short"] or ["pull","--ff-only","origin","main"]. cwd selects the repository; global options (-C, -c, --git-dir) are refused. The effective remote is verified right before execution. If the remote is GitHub, PREFER THE OFFICIAL GITHUB CONNECTOR for reading code, edits, commits, pushes, branches and PRs: on the server copy only bounded read inspection (status/log/diff/show/rev-parse/current branch), fetch REMOTE and pull --ff-only REMOTE BRANCH run, everything else is refused. Verified non-GitHub remotes allow the usual workflow (add/commit/push/branch/checkout/merge/rebase/tag) with local approval or a git_full grant. Read-only status/log/diff/show and bounded rev-parse/current-branch inspection can be auto-approved by local policy. Not for kind=local servers."""
         return manager.request_git_command(server_id,args,reason,client_request_id,cwd,timeout_seconds,grant_id)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
@@ -122,9 +127,14 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         return manager.request_pattern_approval(server_id,repo_path,patterns,reason,client_request_id,ttl_seconds,max_uses,max_timeout_seconds)
 
     @mcp.tool(annotations=read)
-    def get_auto_approval_status(request_id:str) -> dict[str,Any]:
-        """Read a grant application's pending/granted/denied/expired/revoked/exhausted state and effective bounds."""
-        return manager.get_auto_approval_status(request_id)
+    async def get_auto_approval_status(request_id:str,wait_seconds:int=0) -> dict[str,Any]:
+        """Read a grant application's state and effective bounds. Optionally long-poll 0–20 seconds while pending."""
+        if type(wait_seconds) is not int or not 0<=wait_seconds<=20: raise ValueError('wait_seconds 必须在 0–20 之间')
+        deadline=asyncio.get_running_loop().time()+wait_seconds
+        while True:
+            view=manager.get_auto_approval_status(request_id)
+            if view['status'] not in {'pending_approval','queued_readonly','queued_authorized'} or asyncio.get_running_loop().time()>=deadline: return view
+            await asyncio.sleep(.2)
 
     @mcp.tool(annotations=read)
     def list_auto_approvals() -> dict[str,Any]:
@@ -140,6 +150,22 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def inspect_repository(server_id:str,repo_path:str,client_request_id:str) -> dict[str,Any]:
         """Request bounded inspection of the repository root and effective fetch/push remote providers. Git URL rewrites and simple SSH aliases are resolved; credentials/URLs are omitted. Poll request_id for result. provider=github means: use the official GitHub connector for development; the server copy is for deployment pulls only."""
         return manager.submit_operation(server_id,'inspect_repository',{'path':repo_path},'核对 Git 仓库与实际远端',client_request_id,timeout_seconds=60)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=True))
+    def bootstrap_repository(server_id:str,repo_url:str,target_path:str,reason:str,client_request_id:str,
+                             branch:str='main',expected_sha:str='',timeout_seconds:int=900) -> dict[str,Any]:
+        """First GitHub deployment into a non-existent or empty absolute path. Validates URL/effective SSH HostName/branch/SHA, disables Git hooks/config rewrites, preserves clone progress, and optionally verifies an exact full SHA. Always requires one local approval."""
+        server=manager.config.server(server_id)
+        if server.kind=='local': raise ValueError('本机工作区不使用 SSH 部署 bootstrap')
+        plan=build_bootstrap_command(repo_url,target_path,branch,expected_sha,server.github_hosts)
+        view=manager.submit(server_id,plan['command'],reason,client_request_id,server.default_cwd,timeout_seconds)
+        return {**view,'deployment':{k:v for k,v in plan.items() if k!='command'}}
+
+    @mcp.tool(annotations=read)
+    def get_command_history(count:int=50,server_id:str='') -> dict[str,Any]:
+        """Return newest current-runtime requests. count is 0–200; 0 returns all retained requests. server_id optionally filters one configured server. Includes exact submitted commands/structured arguments but not stdout/stderr."""
+        if server_id: manager.config.server(server_id)
+        return command_history(manager,count,server_id)
 
     @mcp.tool(annotations=read)
     async def get_command_status(request_id:str,output_offset:int=0,output_limit:int=16384,wait_seconds:int=0) -> dict[str,Any]:
