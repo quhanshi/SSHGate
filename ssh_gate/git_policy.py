@@ -6,6 +6,7 @@ import posixpath
 import re
 import shlex
 import time
+import unicodedata
 from urllib.parse import urlsplit
 
 from .authorizations import GIT_PREFIX, git_argv
@@ -126,8 +127,11 @@ def inspect_repository(client, sftp, cwd, stop, github_hosts=()) -> dict:
         all_urls.extend([*fetch, *push])
         remotes.append({'name': name, 'provider': provider, 'hosts': hosts})
     provider, _ = provider_for_urls(all_urls, aliases, github_hosts)
-    return {'repo_path': root, 'provider': provider, 'remotes': remotes,
-            'workflow': 'deployment_only' if provider == 'github' else 'full_git' if provider == 'other' else 'verify_remotes'}
+    result = {'repo_path': root, 'provider': provider, 'remotes': remotes,
+              'workflow': 'deployment_only' if provider == 'github' else 'full_git' if provider == 'other' else 'verify_remotes'}
+    if provider == 'github':
+        result['recommendation'] = GITHUB_ADVICE
+    return result
 
 
 def validate_git_operation(command: str, context: dict, category: str) -> None:
@@ -143,13 +147,31 @@ def validate_git_operation(command: str, context: dict, category: str) -> None:
     if context['provider'] in {'unknown', 'mixed'} and not (fetch or pull):
         raise ValueError('Git 远端类型未知或混合，未执行完整 Git 操作；先核对实际远端')
     if context['provider'] == 'github' and not (fetch or pull):
-        raise ValueError('GitHub 仓库在服务器上仅拉取部署和检查状态；代码修改、提交、推送和分支操作请使用 GitHub 工具')
+        raise ValueError(GITHUB_ADVICE + '此命令未执行。')
     if category == 'git_full' and context['provider'] != 'other':
         raise ValueError('git_full 授权只适用于已确认的非 GitHub 远端')
     if fetch or pull:
         remote = remotes[args[1] if fetch else args[2]]
         if remote['provider'] in {'unknown', 'mixed'}:
             raise ValueError('指定远端无法确认，未拉取代码')
+
+
+GITHUB_ADVICE = ('远端是 GitHub：代码阅读、修改、提交、推送、分支和 PR 请优先使用官方 GitHub 连接器；'
+                 '服务器上的副本只做状态检查和 fetch / pull --ff-only 部署。')
+
+
+def git_args_command(args) -> str:
+    """Render structured git arguments as the reviewed literal command. Options before the subcommand are refused."""
+    if not isinstance(args, (list, tuple)) or not 1 <= len(args) <= 64:
+        raise ValueError('args 需要 1–64 个 Git 参数，例如 ["status", "--short"]')
+    for arg in args:
+        if not isinstance(arg, str) or not arg or len(arg) > 4096 or any(unicodedata.category(c) in {'Cc', 'Cf', 'Zl', 'Zp'} for c in arg):
+            raise ValueError('Git 参数必须是非空、不含控制字符的字符串')
+    if args[0].startswith('-'):
+        raise ValueError('不接受 Git 全局选项（-C、-c、--git-dir 等）；用 cwd 指定仓库')
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,39}', args[0]):
+        raise ValueError('第一个参数必须是 Git 子命令，例如 status')
+    return shlex.join(['git', *args])
 
 
 def check_git_command(client, sftp, command, cwd, stop, category='', github_hosts=()) -> dict | None:

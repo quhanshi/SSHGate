@@ -118,6 +118,11 @@ Build-App.cmd
 | `git_deploy_pull` | 指定远端的 `git fetch REMOTE` 和 `git pull --ff-only REMOTE BRANCH` |
 | `git_full` | 已核验的非 GitHub 仓库中常规 add/commit/push/branch/checkout/switch/merge/rebase/tag 及上述拉取；破坏性选项仍逐次审批 |
 | `exact_commands` | 本地批准的完整单条字面命令列表；不接受 shell 包装、内联程序、Git、提权、删除或关机命令 |
+| `command_patterns` | 通过 `request_pattern_approval` 申请的命令模式，匹配的单条字面命令直接放行，见下文 |
+
+需要反复执行一类相似命令时，调用 `request_pattern_approval`，传入 `patterns`（最多 20 条），例如 `npm run *`、`make test-*`、`./scripts/check.sh ...`。模式按参数逐个匹配：程序名必须是字面值（裸命令名按 `/usr/bin/名称` 执行），`*` 匹配不含 `/` 的字符，`**` 可跨目录，`?` 匹配一个字符，末尾的 `...` 匹配其余参数。通配产生的参数不能是选项、绝对路径、`~` 路径或 `..`；选项名称必须写成字面值（`--name=*` 只通配取值）。命令本身不得含管道、重定向、变量或命令替换，参数会被引用后执行，shell 不会再展开通配符。会执行其参数的包装程序（`nohup`、`timeout`、`env` 等）不能用于模式，`sed`、`awk`、`vi` 这类把参数当脚本的程序不能带通配符。模式授权始终需要一次本地批准。Git 不能用模式授权，请使用 `request_git_command`。
+
+本机工作区（`kind: "local"`）也可以申请模式授权，模式按 PowerShell 解析，`repo_path` 必须是工作区内的 Windows 路径，例如 `npm run *`、`dotnet test ...`、`Get-ChildItem -Path src\**`。命令名不区分大小写；通配部分不能是选项（`-x`、`/x`）、绝对路径、盘符、UNC 路径、`..` 或 `~`。命令不能包含变量（`$`）、子表达式、脚本块、管道、`;`、`&`、重定向、双引号、`%` 或 `^`（后两者会被 `npm` 等 `.cmd` 程序经 cmd.exe 展开）。单引号必须包住整个参数。匹配后以 `& '程序' '参数'` 调用，PowerShell 不再展开。`Invoke-Expression`、`Start-Process`、`Remove-Item`、`cmd`、`pwsh` 等会执行其他代码或删除内容的命令不能用于模式。本机的其他授权能力仍不可用，未匹配的命令逐条审批。
 
 默认授权 30 分钟、最多 50 次、单次执行最多 300 秒；本地批准可提高到最多 1 小时、100 次，并受全局命令时限限制。实际派发尝试消耗次数，失败也不退款；相同参数的幂等重试不重复消耗。授权绑定当前进程和服务器配置，重启、到期、撤销、修改服务器或关闭自动放行都会使其失效。撤销取消排队工作；已经运行的命令需单独终止。
 
@@ -126,6 +131,8 @@ Build-App.cmd
 授权控制 SSH Gate 自身的审批，不改变 ChatGPT 平台的确认设置。构建、测试及程序执行仍使用远端账号权限，目录范围不限制程序的所有副作用。
 
 ### Git 工作流
+
+Git 有单独的工具 `request_git_command`：`args` 传结构化参数（不含开头的 `git`，例如 `["pull", "--ff-only", "origin", "main"]`），`cwd` 指定仓库。`request_command` 和 `exec_in_session` 中以 `git` 开头的命令会被拒绝并指向这个工具。MCP 说明要求：**远端为 GitHub 时，阅读代码、修改、提交、推送、分支和 PR 优先使用官方 GitHub 连接器，而不是命令**；`inspect_repository` 对 GitHub 远端也会返回这条建议。
 
 先用 `inspect_repository` 获取真实仓库根和生效的 fetch/push 远端类型；执行前还会重新核验 URL 改写和简单 SSH Host 别名。GitHub.com、`ssh.github.com`、`*.ghe.com` 和本地配置的 `github_hosts` 采用部署策略。自建 GitHub Enterprise 主机或明确的 GitHub SSH 别名应在连接中登记。
 
@@ -160,8 +167,8 @@ GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服�
 | 类别 | 工具 |
 | --- | --- |
 | 服务器 | `list_servers`, `test_connection` |
-| 临时授权 | `request_auto_approval`, `get_auto_approval_status`, `list_auto_approvals`, `revoke_auto_approval` |
-| Git 核验 | `inspect_repository` |
+| 临时授权 | `request_auto_approval`, `request_pattern_approval`, `get_auto_approval_status`, `list_auto_approvals`, `revoke_auto_approval` |
+| Git | `request_git_command`, `inspect_repository` |
 | 命令 | `request_command`, `get_command_status`, `read_command_output`, `cancel_pending_request`, `terminate_command` |
 | 文件系统 | `list_directory`, `stat_path`, `read_file`, `find_files` |
 | 下载 | `download_file`, `download_directory`, `read_download_chunk` |

@@ -18,7 +18,7 @@ SSH Gate 假设：
 MCP 使用本机需要另行登记“本机工作区”（`kind: "local"`，`workspace_roots` 列出 1–8 个目录），它和 SSH 服务器一样走请求、审批和审计流程：
 
 - **文件操作**（浏览、属性、读取、搜索、上传、下载、会话目录）在执行时把路径解析到真实位置，符号链接和目录联接都会被跟随，真实位置必须仍在工作区真实目录内。遍历时不进入链接和联接。设备名、`\\?\` 前缀、备用数据流和以点或空格结尾的名称在提交时即被拒绝。上传只写入新文件，或在显式选择覆盖时替换普通文件；目录 ZIP 只解压到新目录。
-- **命令**是 PowerShell 脚本，在新进程中从工作目录启动，使用 `-NoProfile`，并清除启动器的 Python 环境变量。PowerShell 能访问当前用户可访问的任何路径，工作区不构成命令的沙箱，因此每条本机命令都需要人工审批：只读开关和临时授权都不适用。审批界面显示实际执行的完整脚本和 PowerShell 路径。命令运行在 Windows 作业对象中，结束、终止或超时时会清理它启动的整个进程树（已脱离作业的进程除外）。
+- **命令**是 PowerShell 脚本，在新进程中从工作目录启动，使用 `-NoProfile`，并清除启动器的 Python 环境变量。PowerShell 能访问当前用户可访问的任何路径，工作区不构成命令的沙箱，因此本机命令默认逐条人工审批，只读开关不适用。唯一的例外是本地批准过的 PowerShell 命令模式授权：工作目录须在授权目录内，命令须是单条字面命令（不含变量、子表达式、脚本块、管道、`;`、`&`、重定向、双引号、`%`、`^`），且逐个参数匹配模式。匹配后改写为 `& '程序' '参数'`，由 PowerShell 按字面传参。执行其他代码、删除或修改系统状态的 cmdlet 和程序不能出现在模式中。被调用的程序本身（如 `npm run` 执行的脚本）仍以当前用户权限运行。审批界面显示实际执行的完整脚本和 PowerShell 路径。命令运行在 Windows 作业对象中，结束、终止或超时时会清理它启动的整个进程树（已脱离作业的进程除外）。
 
 ## 2. 本地审批
 
@@ -43,7 +43,8 @@ MCP 不暴露“批准请求”“修改授权策略”“录入密码”“接�
 
 - 只读预授权不能隐式扩大成 pytest、Git 写入或任意程序执行。
 - `python_tests`、`git_deploy_pull` 必须在本地显式预授权且设置目录；自动部署限定 `origin/main`。`manual_only` 不产生免审批授权。
-- `git_full` 和 `exact_commands` 始终需要一次本地批准；shell 组合、包装和内联程序仍逐次审批。
+- `git_full`、`exact_commands` 和 `command_patterns` 始终需要一次本地批准；shell 组合、包装和内联程序仍逐次审批。
+- `command_patterns`（`request_pattern_approval`）按参数匹配，不是前缀或正则匹配。程序名为字面值，通配只出现在参数里，且通配得到的参数不能是选项、绝对或 `~` 路径、`..`，所以 `npm run *` 不能变成 `npm run x --prefix /` 或 `npm exec ...`。审批时就会拒绝执行其参数的包装程序（`nohup`、`timeout`、`env`、`busybox`、`strace` 等）和 Git、shell、提权、删除命令；`sed`、`awk`、`vi` 这类把参数当脚本的程序不能带通配符。匹配后的命令被引用为固定 argv 再交给 `exec`，shell 不再展开。模式只约束命令行：被调用程序及其读取的项目文件（如 `package.json` 脚本、Makefile）仍可执行任意操作，批准时应把它等同于信任这些程序。
 - 授权计数在实际派发前消耗；派发失败也消耗，完全相同请求的重试不消耗第二次。
 - 排队启动、SSH 检查后和发出执行命令前再次校验授权。撤销、过期、配置变化或应用重启后拒绝新执行；关闭自动放行撤销当前授权。
 - 撤销取消排队工作，不自动终止已经运行的工作。后者使用 `terminate_command`。
@@ -69,6 +70,8 @@ MCP 调用方没有可信的对话身份；不接受自报 chat ID 作为隔离�
 ### Git 远端
 
 `inspect_repository` 读取生效的 fetch/push URL（含 `insteadOf/pushInsteadOf` 改写），解析简单 SSH Host/HostName 别名，返回主机和类型，不返回 URL 凭据。含 Include/Match、无法解析的 SSH 别名或混合远端会要求核对；本地 `github_hosts` 可明确登记 GitHub Enterprise 主机或 GitHub 别名。
+
+Git 命令只通过 `request_git_command` 以结构化参数提交，SSH Gate 用 `shlex.join` 生成审核和执行的那一行，因此提交说明中的 `;`、`(` 等字符不会被 shell 解释。MCP 侧的 `request_command` 和 `exec_in_session` 拒绝以 `git` 开头的命令，命令模式授权也不覆盖 Git。MCP 说明要求远端为 GitHub 时优先使用官方 GitHub 连接器；这是对调用方的指引，真正的约束仍是下面的部署策略。
 
 受支持的直接 Git 命令在执行前重复核验远端。GitHub 服务器副本仅受限检查和指定远端的 fetch/快进 pull；首次 clone 单独审批，代码开发使用 GitHub 工具。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局路径/配置覆盖和组合命令不作为直接 Git 操作执行。
 
