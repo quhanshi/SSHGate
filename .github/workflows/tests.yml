@@ -7,6 +7,7 @@ on:
 jobs:
   unittest:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
@@ -21,4 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "mcp==1.30.0" "paramiko>=4.0,<5" "pywebview>=6.1,<7" "httpx>=0.28,<0.29" "cryptography>=46,<47"
       - name: Run unit tests
-        run: python -m unittest discover -s tests -p 'test_*.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_core.py' -v
+          python -m unittest discover -s tests -p 'test_git_policy.py' -v
+          python -m unittest discover -s tests -p 'test_mcp_http.py' -v
+          python -m unittest discover -s tests -p 'test_readonly.py' -v
