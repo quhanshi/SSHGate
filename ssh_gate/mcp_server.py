@@ -42,7 +42,10 @@ For Git call inspect_repository first when the remote/provider is not known. Use
 config overrides. GitHub deployment uses git fetch REMOTE or git pull --ff-only REMOTE BRANCH; it never
 auto-stashes, merges divergent history, resets or pushes. Tool failures do not authorize switching Git workflows.
 Reuse client_request_id ONLY for identical retries.
-Use terminate_command to stop a running request. It requests TERM then KILL of the owned remote
+Use inspect_processes / inspect_services before stopping existing Linux processes or user services.
+ request_stop_service always requires Windows local approval and a previously observed exact identity.
+ verify_service_state checks subsequent identity and ports: signal_sent is not proof of stop.
+ Use terminate_command to stop a running request. It requests TERM then KILL of the owned remote
 process group and reports confirmation in termination.remote_group_terminated; escaped sessions,
 daemons and Docker daemon jobs are outside that guarantee. Cancelling an approval is a separate operation.
 For incremental output keep separate next_stdout_cursor and next_stderr_cursor; cursors count Unicode
@@ -188,6 +191,52 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def terminate_command(request_id:str) -> dict[str,Any]:
         """Request termination of a running command or SFTP transfer. Poll status until finished and inspect termination verification; idempotent. Never approves work."""
         return manager.terminate(request_id)
+
+    @mcp.tool(annotations=read)
+    def inspect_processes(server_id: str, workspace_root: str, client_request_id: str, limit: int = 60) -> dict[str, Any]:
+        """Inspect same-user Linux processes belonging to workspace_root, including PID, start_ticks, PGID, cwd, managed status, and TCP listening ports. No argv or environment is exposed. Poll the returned request_id."""
+        return manager.submit_service(server_id, "service_processes", {"workspace_root":workspace_root, "limit":limit},
+                                      "检查工作区进程及监听端口", client_request_id)
+
+    @mcp.tool(annotations=read)
+    def inspect_services(server_id: str, workspace_root: str, client_request_id: str, limit: int = 60) -> dict[str, Any]:
+        """Inspect systemd --user units scoped by their WorkingDirectory, including the expected MainPID and FragmentPath. Poll returned request_id."""
+        return manager.submit_service(server_id, "service_services", {"workspace_root":workspace_root, "limit":limit},
+                                      "检查工作区 systemd 用户服务", client_request_id)
+
+    def service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
+                       expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports):
+        args = {"workspace_root":workspace_root, "target_kind":target_kind, "ports":ports if ports is not None else []}
+        if target_kind == "user_service":
+            args.update(unit_name=unit_name, expected_main_pid=expected_main_pid,
+                        expected_fragment_path=expected_fragment_path)
+        else:
+            args.update(pid=pid, expected_start_ticks=expected_start_ticks,
+                        expected_pgid=expected_pgid, expected_cwd=expected_cwd)
+        return args
+
+    @mcp.tool(annotations=write)
+    def request_stop_service(server_id: str, workspace_root: str, target_kind: str, reason: str,
+                             client_request_id: str, pid: int = 0, expected_start_ticks: str = "",
+                             expected_pgid: int = 0, expected_cwd: str = "", unit_name: str = "",
+                             expected_main_pid: int = 0, expected_fragment_path: str = "",
+                             ports: list[int] | None = None) -> dict[str, Any]:
+        """Stop an inspected PID/process group or systemd user service, with mandatory per-request Windows local approval. Supply exact identity from inspection; refuses protected/moved/reused or mixed-workspace processes. TERM first, KILL only if still safe. Check verified_stopped, not merely signal_sent."""
+        return manager.submit_service(server_id, "service_stop",
+            service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
+                           expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports),
+            reason, client_request_id)
+
+    @mcp.tool(annotations=read)
+    def verify_service_state(server_id: str, workspace_root: str, target_kind: str, client_request_id: str,
+                             pid: int = 0, expected_start_ticks: str = "", expected_pgid: int = 0,
+                             expected_cwd: str = "", unit_name: str = "", expected_main_pid: int = 0,
+                             expected_fragment_path: str = "", ports: list[int] | None = None) -> dict[str, Any]:
+        """Read-only post-stop check of original identity, user unit state and ports. Returns verified_stopped; does not signal."""
+        return manager.submit_service(server_id, "service_verify",
+            service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
+                           expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports),
+            "复核服务是否退出及端口释放", client_request_id)
 
     @mcp.tool(annotations=read)
     def list_directory(server_id:str,path:str,client_request_id:str,offset:int=0,limit:int=200) -> dict[str,Any]:
