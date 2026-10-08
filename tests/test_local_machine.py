@@ -92,7 +92,7 @@ class Base(unittest.TestCase):
         (self.root / "outside").mkdir()
         (self.root / "outside" / "secret.txt").write_text("outside", encoding="utf-8")
         (self.root / "config.json").write_text(json.dumps({"auto_allow_readonly": True, "servers": [
-            {"id": "pc", "label": "PC", "kind": "local", "workspace_roots": [str(self.workspace)], "auto_categories": ["read_fs"]},
+            {"id": "pc", "label": "PC", "kind": "local", "workspace_roots": [str(self.workspace) if WINDOWS else "C:\\unit-test-workspace"], "auto_categories": ["read_fs"]},
             {"id": "s", "label": "S", "ssh_target": "u@host.example", "default_cwd": "/srv/project"}]}), encoding="utf-8")
         self.ssh_calls = []
         def runner(payload, emit, stop):

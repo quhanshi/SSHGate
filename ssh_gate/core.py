@@ -27,6 +27,7 @@ from .credentials import CredentialStore
 from .ssh_trace import MAX_CONNECTION_EVENTS
 from .authorizations import Grant, CAPABILITY_LABELS, PATTERN_SYNTAX, PS_PATTERN_SYNTAX, grant_arguments, preauthorized
 from .git_policy import git_args_command
+from .service_ops import OPS as SERVICE_OPS, command as service_command
 from .local_machine import LocalRunner, build_script, launch_description, local_settings
 from .local_terminal import find_shell
 from .winpath import ps_quote, windows_path, within
@@ -537,6 +538,39 @@ class ApprovalManager:
                 if reserved: self.transfers.remove(tid,force=True)
                 raise
 
+    def submit_service(self, server_id: str, operation: str, arguments: dict, reason: str,
+                       client_request_id: str, timeout_seconds: int = 40) -> dict:
+        """Structured Linux-only diagnostics and stops, gated by existing review."""
+        server = self.config.server(server_id)
+        if server.kind != "ssh":
+            raise ValueError("服务管理仅支持 Linux SSH 服务器")
+        if not isinstance(arguments, dict):
+            raise ValueError("服务参数无效")
+        root = checked_text(arguments.get("workspace_root"), "工作区")
+        reason = checked_text(reason, "执行目的", multiline=True)
+        if len(reason) > 2000:
+            raise ValueError("执行目的最多 2000 字符")
+        integer(timeout_seconds, 1, self.config.max_command_timeout_seconds, "执行时限")
+        summary, executable, args = service_command(operation, {**arguments, "workspace_root": root})
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", client_request_id):
+            raise ValueError("client_request_id 无效")
+        eligible = operation != "service_stop" and self.config.auto_allow_readonly
+        eligible = eligible and (not server.auto_categories or "diagnostics" in server.auto_categories)
+        roots = tuple(server.auto_roots) if eligible else ()
+        if roots and not scope_contains(root, roots):
+            eligible = False
+            roots = ()
+        token = hashlib.sha256(self._job_secret + client_request_id.encode()).hexdigest()[:32]
+        stored_args = json.dumps({**args, "path": root}, sort_keys=True, ensure_ascii=False)
+        payload = Payload(server_id, server.label, server.ssh_target, summary, server.default_cwd,
+                          reason, timeout_seconds, build_remote_command(executable, server.default_cwd,
+                          timeout_seconds, token), resolve_settings(self.config, server), executable,
+                          eligible, "只读服务检查" if eligible else "停止必须经 Windows 本地逐条审批",
+                          operation=operation, arguments=stored_args, job_token=token,
+                          policy_category="service_stop_manual" if operation == "service_stop" else "diagnostics",
+                          policy_roots=roots)
+        return self._admit(payload, client_request_id)
+
     def create_session(self, server_id, cwd, environment, reason, client_request_id):
         environment=self._environment(environment)
         # Session ID is derived from a private per-runtime nonce, stable across retries.
@@ -862,9 +896,21 @@ class ApprovalManager:
                 request.exit_code = result.exit_code
                 request.error = result.error
                 request.result = getattr(result,"result",None) or {}
+                if request.payload.operation in SERVICE_OPS and result.exit_code is not None:
+                    try:
+                        if request.output_truncated:
+                            raise ValueError("service output truncated")
+                        parsed = json.loads(bytes(request.stdout).decode("utf-8"))
+                        if not isinstance(parsed, dict) or type(parsed.get("ok")) is not bool:
+                            raise ValueError("invalid service result")
+                        request.result = parsed
+                        if not parsed["ok"]:
+                            request.error = parsed.get("error", "remote service check rejected")
+                    except (ValueError, UnicodeError) as exc:
+                        request.error = "服务结果无法验证: " + str(exc)
                 request.termination = getattr(result,"termination",None) or {}
                 request.status = (("terminated" if request.termination.get("remote_group_terminated") else "termination_unconfirmed") if request.termination_requested and result.disconnected else "disconnected" if result.disconnected else "timed_out" if result.timed_out
-                                  else "succeeded" if result.exit_code == 0 and not result.error else "failed")
+                                  else "succeeded" if result.exit_code == 0 and not request.error else "failed")
         except Exception as exc:
             with self._lock:
                 request.status = "failed"
