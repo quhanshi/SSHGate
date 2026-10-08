@@ -910,7 +910,7 @@ class ApprovalManager:
                         request.error = "服务结果无法验证: " + str(exc)
                 request.termination = getattr(result,"termination",None) or {}
                 request.status = (("terminated" if request.termination.get("remote_group_terminated") else "termination_unconfirmed") if request.termination_requested and result.disconnected else "disconnected" if result.disconnected else "timed_out" if result.timed_out
-                                  else "succeeded" if result.exit_code == 0 and not result.error else "failed")
+                                  else "succeeded" if result.exit_code == 0 and not request.error else "failed")
         except Exception as exc:
             with self._lock:
                 request.status = "failed"
