@@ -27,3 +27,4 @@ jobs:
           python -m unittest discover -s tests -p 'test_git_policy.py' -v
           python -m unittest discover -s tests -p 'test_mcp_http.py' -v
           python -m unittest discover -s tests -p 'test_readonly.py' -v
+          python -m unittest discover -s tests -p 'test_service_ops.py' -v
