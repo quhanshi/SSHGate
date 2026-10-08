@@ -182,9 +182,14 @@ def check_git_command(client, sftp, command, cwd, stop, category='', github_host
         return None
     if posixpath.basename(first) != 'git':
         return None
+    # Git writes already explicitly approved in the local Windows UI must not
+    # fail merely because the repository has mixed remotes or broken metadata.
+    # Automatic/temporary Git grants still use the strict checks below.
+    if category == 'git_manual':
+        return {'provider': 'manual', 'workflow': 'locally_approved'}
     args = git_argv(command)
     if not args or args[0].startswith('-'):
-        raise ValueError('Git 必须通过单条命令与 cwd 参数执行，不能嵌入 shell 组合或使用全局路径选项')
+        raise ValueError('自动授权 Git 必须使用明确 cwd 和单条结构化命令')
     if args[0] == 'clone':
         if category == 'git_full' or len(args) not in {2, 3} or args[1].startswith('-'):
             raise ValueError('首次部署请单独审批 git clone URL [目录]，不适用已有仓库的临时授权')
