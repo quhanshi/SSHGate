@@ -71,9 +71,9 @@ MCP 调用方没有可信的对话身份；不接受自报 chat ID 作为隔离�
 
 `inspect_repository` 读取生效的 fetch/push URL（含 `insteadOf/pushInsteadOf` 改写），解析简单 SSH Host/HostName 别名，返回主机和类型，不返回 URL 凭据。含 Include/Match、无法解析的 SSH 别名或混合远端会要求核对；本地 `github_hosts` 可明确登记 GitHub Enterprise 主机或 GitHub 别名。
 
-Git 命令只通过 `request_git_command` 以结构化参数提交，SSH Gate 用 `shlex.join` 生成审核和执行的那一行，因此提交说明中的 `;`、`(` 等字符不会被 shell 解释。MCP 侧的 `request_command` 和 `exec_in_session` 拒绝以 `git` 开头的命令，命令模式授权也不覆盖 Git。MCP 说明要求远端为 GitHub 时优先使用官方 GitHub 连接器；这是对调用方的指引，真正的约束仍是下面的部署策略。
+Git 推荐通过 `request_git_command` 以结构化参数提交，SSH Gate 用 `shlex.join` 生成审核和执行命令，避免提交说明里的 shell 特殊字符被执行。`request_command` 与 `exec_in_session` 也接受 Git；不满足安全只读规则的 Git 操作必须逐条在 Windows 界面批准，命令模式授权仍不覆盖 Git。GitHub 的代码开发仍优先走官方 GitHub 连接器。
 
-受支持的直接 Git 命令在执行前重复核验远端。GitHub 服务器副本仅受限检查和指定远端的 fetch/快进 pull；代码开发使用 GitHub 工具。首次部署使用 `bootstrap_repository` 时只接受已确认的 GitHub HTTPS/SSH URL 和空/不存在的规范化绝对目标路径；SSH URL 先用 `ssh -G` 核对生效 HostName，防止 SSH 配置把 GitHub 名称重定向到未批准主机。该流程可绑定完整提交 SHA，关闭 hooks/fsmonitor，并通过 `GIT_CONFIG_NOSYSTEM=1` 与 `GIT_CONFIG_GLOBAL=/dev/null` 阻止 system/global Git 配置重写 URL；ProxyJump 等仍由 OpenSSH 处理。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局路径/配置覆盖和组合命令不作为直接 Git 操作执行。
+临时自动授权的直接 Git 命令在执行前仍重复核验远端；自动授权的 GitHub 服务器副本仅进行受限检查与指定远端的 fetch/快进 pull。GitHub 开发仍优先使用 GitHub 工具。GitHub 写入、混合远端及本地 worktree 维护可在 Windows 本地逐条明确批准后执行，但不会因远端已知而被自动放行。首次部署使用 `bootstrap_repository` 时只接受已确认的 GitHub HTTPS/SSH URL 和空/不存在的规范化绝对目标路径；SSH URL 先用 `ssh -G` 核对生效 HostName，防止 SSH 配置把 GitHub 名称重定向到未批准主机。该流程可绑定完整提交 SHA，关闭 hooks/fsmonitor，并通过 `GIT_CONFIG_NOSYSTEM=1` 与 `GIT_CONFIG_GLOBAL=/dev/null` 阻止 system/global Git 配置重写 URL；ProxyJump 等仍由 OpenSSH 处理。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。临时授权的固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局配置覆盖和组合命令不会自动授权。经人工批准的 Git 仍拥有远端账号权限，可能触发 hooks、filter 或外部副作用，必须在审批界面核对命令内容。
 
 远端账号配置和经本地批准的项目程序必须可信。任意脚本、Git filter、测试或构建程序可能调用 Git 或修改目录外资源；这里的直接 Git 策略不声称拦截其内部行为。真正限制这些副作用需要远端容器、账号和 OS 权限隔离。
 
