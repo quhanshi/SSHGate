@@ -125,6 +125,102 @@ class LinuxServiceTests(unittest.TestCase):
             self.assertFalse(record.exists())
 
 
+    def fake_user_systemd(self, directory, *, managed_launcher=False, restart_on_stop=False):
+        binary = Path(directory) / "systemctl"
+        marker = Path(directory) / "stopped"
+        script = '''#!/usr/bin/env python3
+import os, sys
+cmd = sys.argv[1:]
+if "show" in cmd:
+    stopped = os.path.exists(os.environ["FAKE_STOP_MARK"])
+    active = (not stopped) or os.environ.get("FAKE_RESTART", "") == "1"
+    pid = os.environ["FAKE_MAIN_PID"] if active else "0"
+    print("Id=dev.service")
+    print("LoadState=loaded")
+    print("ActiveState=" + ("active" if active else "inactive"))
+    print("SubState=" + ("running" if active else "dead"))
+    print("MainPID=" + pid)
+    print("WorkingDirectory=" + os.environ["FAKE_WORKSPACE"])
+    print("FragmentPath=" + os.environ["FAKE_UNIT_FRAGMENT"])
+    print("Restart=always")
+    print("ExecStart=" + os.environ["FAKE_EXEC_START"])
+    print("ExecStop=")
+elif "list-units" in cmd:
+    print("dev.service loaded active running Test service")
+elif "stop" in cmd:
+    open(os.environ["FAKE_STOP_MARK"], "w").close()
+else:
+    sys.exit(2)
+'''
+        binary.write_text(script, encoding="utf-8")
+        binary.chmod(0o755)
+        env = {**os.environ,
+               "PATH": str(directory) + os.pathsep + os.environ.get("PATH", ""),
+               "FAKE_STOP_MARK": str(marker),
+               "FAKE_MAIN_PID": str(self.proc.pid if self.proc else 0),
+               "FAKE_WORKSPACE": self.root,
+               "FAKE_UNIT_FRAGMENT": str(Path(directory) / "dev.service"),
+               "FAKE_EXEC_START": "/usr/bin/docker run --rm test" if managed_launcher else "/usr/bin/sleep 30",
+               "FAKE_RESTART": "1" if restart_on_stop else "0"}
+        return env, marker
+
+    def test_systemd_inactive_is_not_enough_when_original_pid_still_exists(self):
+        row = self.snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            env, marker = self.fake_user_systemd(directory)
+            inspect = invoke("service_services", {"workspace_root": self.root, "limit": 10}, env=env)
+            self.assertEqual(0, inspect.returncode, inspect.stdout + inspect.stderr)
+            info = json.loads(inspect.stdout)["services"][0]
+            self.assertEqual(row["pid"], info["main_pid"])
+            self.assertEqual(row["start_ticks"], info["main_start_ticks"])
+            args = {"workspace_root": self.root, "target_kind": "user_service",
+                    "unit_name": "dev.service", "expected_main_pid": row["pid"],
+                    "expected_main_start_ticks": row["start_ticks"],
+                    "expected_fragment_path": info["fragment_path"], "ports": []}
+            stopped = invoke("service_stop", args, env=env)
+            self.assertEqual(0, stopped.returncode, stopped.stdout + stopped.stderr)
+            result = json.loads(stopped.stdout)
+            self.assertTrue(marker.exists())
+            self.assertTrue(result["signal_sent"])
+            self.assertFalse(result["verified_stopped"])
+            self.assertTrue(result["original_identity_alive"])
+            verify = invoke("service_verify", args, env=env)
+            self.assertFalse(json.loads(verify.stdout)["verified_stopped"])
+
+    def test_systemd_stale_main_pid_or_managed_launcher_never_calls_stop(self):
+        row = self.snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            env, marker = self.fake_user_systemd(directory)
+            args = {"workspace_root": self.root, "target_kind": "user_service",
+                    "unit_name": "dev.service", "expected_main_pid": row["pid"],
+                    "expected_main_start_ticks": str(int(row["start_ticks"]) + 1),
+                    "expected_fragment_path": env["FAKE_UNIT_FRAGMENT"], "ports": []}
+            stale = invoke("service_stop", args, env=env)
+            self.assertNotEqual(0, stale.returncode)
+            self.assertIn("PROCESS_IDENTITY_CHANGED", stale.stdout)
+            self.assertFalse(marker.exists())
+            env["FAKE_EXEC_START"] = "/usr/bin/docker run --rm test"
+            protected = invoke("service_stop", {**args, "expected_main_start_ticks": row["start_ticks"]}, env=env)
+            self.assertNotEqual(0, protected.returncode)
+            self.assertIn("protected service name", protected.stdout)
+            self.assertFalse(marker.exists())
+
+    def test_service_restart_cannot_be_reported_stopped(self):
+        row = self.snapshot()
+        with tempfile.TemporaryDirectory() as directory:
+            env, marker = self.fake_user_systemd(directory, restart_on_stop=True)
+            args = {"workspace_root": self.root, "target_kind": "user_service",
+                    "unit_name": "dev.service", "expected_main_pid": row["pid"],
+                    "expected_main_start_ticks": row["start_ticks"],
+                    "expected_fragment_path": env["FAKE_UNIT_FRAGMENT"], "ports": []}
+            result = invoke("service_stop", args, env=env)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            status = json.loads(result.stdout)
+            self.assertTrue(marker.exists())
+            self.assertFalse(status["verified_stopped"])
+            self.assertEqual("active", status["service"]["active_state"])
+
+
 class ServiceAdmissionTests(unittest.TestCase):
     def test_safe_argv_and_strict_argument_validation(self):
         display, rendered, args = command("service_processes",
