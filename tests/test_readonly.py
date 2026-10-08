@@ -24,6 +24,31 @@ class ReadOnlyParsingTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertTrue(readonly_command(command).allowed)
 
+    def test_bounded_service_and_socket_diagnostics(self):
+        safe = (
+            "ss -lntp", "ss -ltnp", "systemctl --user is-active dq-frontend-8701.service",
+            "systemctl --user is-enabled dq-frontend-8701.service",
+            "systemctl --user cat dq-frontend-8701.service",
+            "systemctl --user show dq-frontend-8701.service -p ExecStart -p ActiveState",
+            "systemctl --user list-units --type=service --all --no-pager",
+        )
+        dangerous = (
+            "ss -K dst 127.0.0.1", "ss --kill", "systemctl --user stop dq.service",
+            "systemctl --user enable dq.service", "systemctl --user daemon-reload",
+            "systemctl --system cat dq.service",
+            "systemctl --user show dq.service -p Environment",
+            "systemctl --user show dq.service --property ExecStart --property Environment",
+            "systemctl --user cat dq.service other.service",
+        )
+        for command in safe:
+            with self.subTest(command=command):
+                decision = readonly_command(command)
+                self.assertTrue(decision.allowed, decision.explanation)
+                self.assertEqual("diagnostics", decision.category)
+        for command in dangerous:
+            with self.subTest(command=command):
+                self.assertFalse(readonly_command(command).allowed)
+
     def test_ll_uses_fixed_ls_binary(self):
         self.assertEqual("exec /usr/bin/ls -l /tmp", readonly_command("ll /tmp").executable_command)
 
