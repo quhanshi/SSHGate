@@ -342,7 +342,7 @@ def command(operation: str, arguments: dict) -> tuple[str, str, dict]:
                     type(pgid) is not int or not 2 <= pgid < 1 << 30 or
                     not isinstance(ticks, str) or not re.fullmatch(r"[0-9]{1,24}", ticks) or
                     not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 1024 or
-                    any(k in args for k in ("unit_name", "expected_main_pid", "expected_fragment_path"))):
+                    any(k in args for k in ("unit_name", "expected_main_pid", "expected_main_start_ticks", "expected_fragment_path"))):
                 raise ValueError("process inspection identity required")
     label = (args.get("unit_name") or str(args.get("pid", ""))) if operation in (
         "service_stop", "service_verify") else root
