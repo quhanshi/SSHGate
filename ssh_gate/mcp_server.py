@@ -205,10 +205,11 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
                                       "检查工作区 systemd 用户服务", client_request_id)
 
     def service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
-                       expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports):
+                       expected_cwd, unit_name, expected_main_pid, expected_main_start_ticks, expected_fragment_path, ports):
         args = {"workspace_root":workspace_root, "target_kind":target_kind, "ports":ports if ports is not None else []}
         if target_kind == "user_service":
             args.update(unit_name=unit_name, expected_main_pid=expected_main_pid,
+                        expected_main_start_ticks=expected_main_start_ticks,
                         expected_fragment_path=expected_fragment_path)
         else:
             args.update(pid=pid, expected_start_ticks=expected_start_ticks,
@@ -219,12 +220,12 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def request_stop_service(server_id: str, workspace_root: str, target_kind: str, reason: str,
                              client_request_id: str, pid: int = 0, expected_start_ticks: str = "",
                              expected_pgid: int = 0, expected_cwd: str = "", unit_name: str = "",
-                             expected_main_pid: int = 0, expected_fragment_path: str = "",
+                             expected_main_pid: int = 0, expected_main_start_ticks: str = "", expected_fragment_path: str = "",
                              ports: list[int] | None = None) -> dict[str, Any]:
         """Stop an inspected PID/process group or systemd user service, with mandatory per-request Windows local approval. Supply exact identity from inspection; refuses protected/moved/reused or mixed-workspace processes. TERM first, KILL only if still safe. Check verified_stopped, not merely signal_sent."""
         return manager.submit_service(server_id, "service_stop",
             service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
-                           expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports),
+                           expected_cwd, unit_name, expected_main_pid, expected_main_start_ticks, expected_fragment_path, ports),
             reason, client_request_id)
 
     @mcp.tool(annotations=read)
@@ -235,7 +236,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
         """Read-only post-stop check of original identity, user unit state and ports. Returns verified_stopped; does not signal."""
         return manager.submit_service(server_id, "service_verify",
             service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
-                           expected_cwd, unit_name, expected_main_pid, expected_fragment_path, ports),
+                           expected_cwd, unit_name, expected_main_pid, expected_main_start_ticks, expected_fragment_path, ports),
             "复核服务是否退出及端口释放", client_request_id)
 
     @mcp.tool(annotations=read)
