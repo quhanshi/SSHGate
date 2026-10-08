@@ -148,7 +148,22 @@ def identity(p, args, root):
     return p
 
 def group_members(pgid):
-    return [p for p in processes() if p["pgid"] == pgid]
+    # Include unknown-UID/unreadable processes; never silently omit a group member
+    # and then issue a group-wide signal based on an incomplete process list.
+    rows = []
+    for name in os.listdir("/proc"):
+        if not name.isdecimal():
+            continue
+        pid = int(name)
+        try:
+            stat = open("/proc/%d/stat" % pid, encoding="ascii").read()
+            fields = stat[stat.rfind(") ") + 2:].split()
+            if fields[0] == "Z" or int(fields[2]) != pgid:
+                continue
+        except (OSError, ValueError, IndexError):
+            continue
+        rows.append(process(pid) or {"pid": pid, "managed": True, "cwd": ""})
+    return rows
 
 def group_safe(pgid, root):
     members = group_members(pgid)
@@ -163,11 +178,18 @@ def same_process(pid, ticks):
 def check_ports(wanted):
     if not wanted:
         return []
-    try:
-        ours = ports_for([p["pid"] for p in processes()])
-        return sorted(set(wanted).intersection(port for values in ours.values() for port in values))
-    except OSError:
-        return list(wanted)  # fail closed: unknown is not "free"
+    open_ports = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="ascii") as inp:
+                next(inp)
+                for row in inp:
+                    cols = row.split()
+                    if len(cols) > 3 and cols[3] == "0A":
+                        open_ports.add(int(cols[1].split(":")[-1], 16))
+        except OSError:
+            return list(wanted)  # unknown is never reported free
+    return sorted(set(wanted) & open_ports)
 
 mode = sys.argv[1]
 args = json.loads(sys.argv[2])
@@ -207,7 +229,7 @@ elif mode in ("service_stop", "service_verify"):
     if kind == "user_service":
         before = unit_info(args["unit_name"])
         safe_unit(before, root)
-        if (before["main_pid"] != args["expected_main_pid"] or
+        if mode == "service_stop" and (before["main_pid"] != args["expected_main_pid"] or
             before["fragment_path"] != args["expected_fragment_path"]):
             fail("PROCESS_IDENTITY_CHANGED: service identity changed")
         if mode == "service_stop":
@@ -312,6 +334,12 @@ def command(operation: str, arguments: dict) -> tuple[str, str, dict]:
         "service_stop", "service_verify") else root
     # The display is never a command executor. Remote uses fixed reviewed Python.
     summary = operation + " " + str(label) + " [workspace=" + root + "]"
+    if operation in ("service_stop", "service_verify"):
+        if args["target_kind"] == "user_service":
+            summary += " [main_pid=" + str(args["expected_main_pid"]) + " fragment=" + args["expected_fragment_path"] + "]"
+        else:
+            summary += " [start_ticks=" + args["expected_start_ticks"] + " pgid=" + str(args["expected_pgid"]) + " cwd=" + args["expected_cwd"] + "]"
+        summary += " [ports=" + repr(args["ports"]) + "]"
     encoded = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     remote_command = "python3 -c " + shlex.quote(REMOTE) + " " + shlex.quote(operation) + " " + shlex.quote(encoded)
     return summary, remote_command, args
