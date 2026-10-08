@@ -187,7 +187,7 @@ def _systemctl_user_read(args: list[str]) -> bool:
     if verb == "list-units":
         return len(tail) <= 3 and len(tail) == len(set(tail)) and all(
             flag in {"--type=service", "--all", "--no-pager"} for flag in tail)
-    unit_ok = lambda x: bool(re.fullmatch(r"[A-Za-z0-9_@.\\-]+\\.service", x))
+    unit_ok = lambda x: bool(re.fullmatch(r"[A-Za-z0-9_@.-]+\.service", x))
     if verb in {"cat", "is-active", "is-enabled"}:
         return len(tail) == 1 and unit_ok(tail[0])
     if verb != "show" or not tail or not unit_ok(tail[0]):
