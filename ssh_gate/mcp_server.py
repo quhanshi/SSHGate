@@ -21,14 +21,14 @@ For repeated work, request_auto_approval for an explicit server/directory/capabi
 It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status
 (with wait_seconds up to 20 seconds) and pass the returned grant_id to request_command. For a family of similar
 commands (npm run *, make test-*) use request_pattern_approval: one local approval, then matching commands run
-directly within its bounds. Git: use request_git_command (structured args), not request_command. Before Git work
-call inspect_repository. For the first GitHub deployment into an empty path use bootstrap_repository.
+directly within its bounds. Git: prefer request_git_command (structured args). request_command also accepts Git;
+non-read-only Git commands require per-command Windows approval. Inspect remotes when possible. For the first GitHub deployment into an empty path use bootstrap_repository.
 After an interrupted chat/tool run use get_command_history; count=0 returns all retained current-runtime requests
 and server_id optionally filters one configured server.
 IF THE REMOTE IS GITHUB, PREFER THE OFFICIAL GITHUB CONNECTOR over commands for reading code, edits, commits,
-pushes, branches, issues and PRs. Server copies of GitHub repositories are deployment copies: SSH Gate allows
-only bounded read inspection (status/log/diff/show/rev-parse/current branch), fetch and pull --ff-only there. Use the GitHub connector even when a command would be faster.
-For other verified Git remotes use the locally approved Git workflow. Unknown/mixed remotes need verification.
+pushes, branches, issues and PRs. Automatic grants remain bounded to safe reads and scoped
+Git deployment. Git writes, mixed remotes and worktree repair can run after explicit one-command
+Windows approval; they are never broadly auto-granted.
 Passwords, private-key passphrases and host-key confirmations are handled only in the Windows WebView.
 Use structured SFTP tools for directory listing, bounded file search, stat and segmented reads.
 All long operations return a request_id: poll get_command_status or read_command_output.
@@ -93,23 +93,14 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
                 'approval_required_for_all_commands':not manager.config.auto_allow_readonly,
                 'auto_readonly_tools':['ll',*BINARIES], 'approval_location':'Windows 本地审批窗口'}
 
-    def refuse_git_line(server_id:str,command:str) -> None:
-        # Git on SSH servers goes through request_git_command, so GitHub copies always get the connector guidance.
-        if manager.config.server(server_id).kind=='local': return
-        try: first=shlex.split(command.strip().splitlines()[0])[0] if command.strip() else ''
-        except ValueError: first=''
-        if posixpath.basename(first)=='git':
-            raise ValueError('Git 操作请使用 request_git_command（args 传结构化参数）。远端为 GitHub 时请优先使用官方 GitHub 连接器。')
-
     @mcp.tool(annotations=write)
     def request_command(server_id:str,command:str,reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
-        """Submit a literal command with an optional temporary grant_id. The server checks target, directory, parameters, time and uses. Unrecognized commands/scripts require local approval. Commands starting with git are refused on SSH servers: use request_git_command. On kind=local servers the command is PowerShell; retries must be identical."""
-        refuse_git_line(server_id,command)
+        """Submit a literal remote command for normal approval. Git is accepted too; non-read-only Git requires explicit Windows local approval. Prefer request_git_command for safely quoted arguments."""
         return manager.submit(server_id,command,reason,client_request_id,cwd,timeout_seconds,grant_id=grant_id)
 
     @mcp.tool(annotations=write)
     def request_git_command(server_id:str,args:list[str],reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
-        """Run one Git command from structured arguments, without the leading 'git', e.g. ["status","--short"] or ["pull","--ff-only","origin","main"]. cwd selects the repository; global options (-C, -c, --git-dir) are refused. The effective remote is verified right before execution. If the remote is GitHub, PREFER THE OFFICIAL GITHUB CONNECTOR for reading code, edits, commits, pushes, branches and PRs: on the server copy only bounded read inspection (status/log/diff/show/rev-parse/current branch), fetch REMOTE and pull --ff-only REMOTE BRANCH run, everything else is refused. Verified non-GitHub remotes allow the usual workflow (add/commit/push/branch/checkout/merge/rebase/tag) with local approval or a git_full grant. Read-only status/log/diff/show and bounded rev-parse/current-branch inspection can be auto-approved by local policy. Not for kind=local servers."""
+        """Run Git using structured argv without the executable. Safe read operations and scoped deployment pulls may use grants; all other Git writes, including GitHub and mixed remote repositories, require explicit per-command Windows approval. For GitHub code changes, prefer the GitHub connector. Use request_command for exceptional global Git options requiring manual approval."""
         return manager.request_git_command(server_id,args,reason,client_request_id,cwd,timeout_seconds,grant_id)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
@@ -270,8 +261,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
 
     @mcp.tool(annotations=write)
     def exec_in_session(session_id:str,command:str,reason:str,client_request_id:str,timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
-        """Submit a command with the session's current context frozen into its approval digest. cd/export changes within the command do not persist. Git: request_git_command with cwd."""
-        refuse_git_line(manager.session_context(session_id)['server_id'],command)
+        """Submit a command using the frozen session context; Git requires the same explicit Windows approval as request_command. Session changes do not persist across commands."""
         return manager.exec_in_session(session_id,command,reason,client_request_id,timeout_seconds,grant_id)
 
     @mcp.tool(annotations=read)
