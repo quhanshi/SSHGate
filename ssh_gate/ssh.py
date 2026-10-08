@@ -18,6 +18,7 @@ from typing import Callable
 import paramiko
 
 from .ssh_config import SSHSettings, resolve_settings, config_profiles
+from .service_ops import OPS as SERVICE_OPS
 from .prompts import LocalPrompts, PromptCancelled
 from .credentials import CredentialStore
 from .ssh_trace import ConnectionTrace, HostKeyRejected, ObservedSSHClient, ObservedTransport, failure_code
@@ -482,7 +483,7 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
             except (ValueError, IndexError):
                 first = ""
             direct_git = operation == "command" and first.rsplit('/', 1)[-1] == 'git'
-            if operation!="command" or roots or direct_git:
+            if (operation!="command" and operation not in SERVICE_OPS) or roots or direct_git:
                 from .filesystem import resolve_path, operation as file_operation
                 from .policies import scope_contains
                 observe(phase="opening_sftp")
@@ -512,7 +513,7 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
                                                 payload.policy_category, payload.github_hosts)
                     if roots and context.get("repo_path") and not scope_contains(context["repo_path"], roots):
                         raise ValueError("实际 Git 仓库根目录超出授权范围")
-                if operation!="command":
+                if operation!="command" and operation not in SERVICE_OPS:
                     result=file_operation(sftp,payload,self.transfers,stop,observe)
                     return RunResult(0,result=result)
             observe(phase="executing")
