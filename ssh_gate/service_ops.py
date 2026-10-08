@@ -18,10 +18,10 @@ FIELDS = {
     "service_services": {"workspace_root", "limit"},
     "service_stop": {"workspace_root", "target_kind", "pid", "expected_start_ticks",
                      "expected_pgid", "expected_cwd", "unit_name",
-                     "expected_main_pid", "expected_fragment_path", "ports"},
+                     "expected_main_pid", "expected_main_start_ticks", "expected_fragment_path", "ports"},
     "service_verify": {"workspace_root", "target_kind", "pid", "expected_start_ticks",
                        "expected_pgid", "expected_cwd", "unit_name",
-                       "expected_main_pid", "expected_fragment_path", "ports"},
+                       "expected_main_pid", "expected_main_start_ticks", "expected_fragment_path", "ports"},
 }
 # Remote program intentionally does not expose a generic command executor.
 REMOTE = r'''
@@ -43,7 +43,7 @@ def canonical_root(raw):
     real = os.path.realpath(absolute)
     denied = ("/", "/etc", "/usr", "/var", "/run", "/tmp", "/proc", "/dev",
               "/sys", "/boot", "/opt", "/home", "/root", "/srv")
-    if absolute != real or absolute in denied or not os.path.isdir(real):
+    if absolute != real or absolute in denied or absolute == os.path.expanduser("~") or not os.path.isdir(real):
         fail("workspace_root must be an existing, non-symlink, specific directory")
     return real
 
@@ -111,24 +111,30 @@ def systemctl(*args):
 def unit_info(name):
     if not re.fullmatch(r"[A-Za-z0-9_.@:-]{1,180}\.service", name):
         fail("invalid user unit name")
-    data = systemctl("show", name, "--property=Id,LoadState,ActiveState,SubState,MainPID,WorkingDirectory,FragmentPath,Restart")
+    data = systemctl("show", name, "--property=Id,LoadState,ActiveState,SubState,MainPID,WorkingDirectory,FragmentPath,Restart,ExecStart,ExecStop")
     if data.returncode:
         fail("systemd user unit inspection failed")
     props = dict(line.split("=", 1) for line in data.stdout.splitlines() if "=" in line)
+    pid = int(props.get("MainPID", "0") or "0")
+    main = process(pid) if pid else None
+    unsafe = bool(re.search(r"(?i)(?:^|[/\s;=])(docker|nomad|podman|containerd|kubectl)(?:[/\s;=]|$)", props.get("ExecStart", "") + " " + props.get("ExecStop", "")))
     return {"unit_name": name, "load_state": props.get("LoadState", ""),
             "active_state": props.get("ActiveState", ""), "sub_state": props.get("SubState", ""),
-            "main_pid": int(props.get("MainPID", "0") or "0"),
+            "main_pid": pid, "main_start_ticks": main["start_ticks"] if main else "",
+            "external_manager": unsafe,
             "working_directory": props.get("WorkingDirectory", ""),
             "fragment_path": props.get("FragmentPath", ""),
             "restart": props.get("Restart", "")}
 
 def safe_unit(info, root):
     name = info["unit_name"].lower()
-    if any(marker in name for marker in ("nomad", "docker", "containerd", "sshgate")):
+    if info["external_manager"] or any(marker in name for marker in ("nomad", "docker", "containerd", "sshgate")):
         fail("protected service name")
     wd = info["working_directory"]
     if not wd or not wd.startswith("/") or os.path.realpath(wd) != wd or not inside(wd, root):
         fail("service WorkingDirectory is not in the requested workspace")
+    if info["active_state"] == "active" and info["main_pid"] == 0:
+        fail("active user service without an attributable MainPID")
     if info["load_state"] != "loaded":
         fail("service unit is not loaded")
     pid = info["main_pid"]
@@ -218,8 +224,9 @@ elif mode == "service_services":
             wd = info["working_directory"]
             if wd and inside(os.path.realpath(wd), root):
                 info["can_request_stop"] = (info["load_state"] == "loaded" and
-                    os.path.realpath(wd) == wd and not any(x in info["unit_name"].lower()
-                    for x in ("nomad", "docker", "containerd", "sshgate")))
+                    os.path.realpath(wd) == wd and not info["external_manager"] and not any(x in info["unit_name"].lower()
+                    for x in ("nomad", "docker", "containerd", "sshgate")) and
+                    (info["active_state"] != "active" or info["main_pid"] > 0))
                 results.append(info)
                 if len(results) >= args["limit"]:
                     break
@@ -230,6 +237,7 @@ elif mode in ("service_stop", "service_verify"):
         before = unit_info(args["unit_name"])
         safe_unit(before, root)
         if mode == "service_stop" and (before["main_pid"] != args["expected_main_pid"] or
+            before["main_start_ticks"] != args["expected_main_start_ticks"] or
             before["fragment_path"] != args["expected_fragment_path"]):
             fail("PROCESS_IDENTITY_CHANGED: service identity changed")
         if mode == "service_stop":
@@ -316,6 +324,8 @@ def command(operation: str, arguments: dict) -> tuple[str, str, dict]:
                 raise ValueError("unit_name invalid")
             if (type(args.get("expected_main_pid")) is not int or
                     not 0 <= args["expected_main_pid"] < 1 << 30 or
+                    not isinstance(args.get("expected_main_start_ticks"), str) or
+                    (args["expected_main_pid"] > 0 and not re.fullmatch(r"[0-9]{1,24}", args["expected_main_start_ticks"])) or
                     not isinstance(args.get("expected_fragment_path"), str) or
                     not args["expected_fragment_path"].startswith("/")):
                 raise ValueError("service inspection identity required")
@@ -336,7 +346,7 @@ def command(operation: str, arguments: dict) -> tuple[str, str, dict]:
     summary = operation + " " + str(label) + " [workspace=" + root + "]"
     if operation in ("service_stop", "service_verify"):
         if args["target_kind"] == "user_service":
-            summary += " [main_pid=" + str(args["expected_main_pid"]) + " fragment=" + args["expected_fragment_path"] + "]"
+            summary += " [main_pid=" + str(args["expected_main_pid"]) + " start_ticks=" + args["expected_main_start_ticks"] + " fragment=" + args["expected_fragment_path"] + "]"
         else:
             summary += " [start_ticks=" + args["expected_start_ticks"] + " pgid=" + str(args["expected_pgid"]) + " cwd=" + args["expected_cwd"] + "]"
         summary += " [ports=" + repr(args["ports"]) + "]"
