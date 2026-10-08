@@ -63,11 +63,18 @@ class LinuxServiceTests(unittest.TestCase):
 
     def test_inspection_and_pid_stop_then_readonly_verify(self):
         row = self.snapshot()
-        self.assertFalse(row["managed"])
         args = {"workspace_root": self.root, "target_kind": "process",
                 "pid": row["pid"], "expected_start_ticks": row["start_ticks"],
                 "expected_pgid": row["pgid"], "expected_cwd": row["cwd"], "ports": []}
         finished = invoke("service_stop", args)
+        if row["managed"]:
+            # Hosted CI runners may put all children in a systemd .service cgroup.
+            # The safe behavior is to refuse this stop; never disable that guard
+            # merely to make the integration test pass on managed hosts.
+            self.assertNotEqual(0, finished.returncode)
+            self.assertIn("protected/managed process", finished.stdout)
+            self.assertIsNone(self.proc.poll())
+            return
         self.assertEqual(0, finished.returncode, finished.stdout + finished.stderr)
         result = json.loads(finished.stdout)
         self.assertTrue(result["signal_sent"])
