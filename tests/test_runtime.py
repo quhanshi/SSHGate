@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from dataclasses import replace
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import patch, MagicMock
 
 from ssh_gate.config import load_config
 from ssh_gate.runtime import TunnelRuntime, redact_log
@@ -39,7 +40,7 @@ class TunnelRuntimeTests(unittest.TestCase):
         def launch(argv,**kwargs):
             captured.update(argv=argv,env=kwargs["env"].copy(),shell=kwargs["shell"])
             return FakeProcess()
-        with patch("ssh_gate.runtime.subprocess.Popen",side_effect=launch),patch("ssh_gate.runtime.threading.Thread"):
+        with patch("ssh_gate.runtime.subprocess.Popen",side_effect=launch),patch("ssh_gate.runtime.threading", SimpleNamespace(Thread=MagicMock())):
             self.runtime.start(self.config,8765,"fixture-secret-key")
         self.assertEqual([str(self.binary),"run"],captured["argv"])
         self.assertEqual("fixture-secret-key",captured["env"]["CONTROL_PLANE_API_KEY"])
@@ -49,14 +50,11 @@ class TunnelRuntimeTests(unittest.TestCase):
         self.assertNotIn("fixture-secret-key",json.dumps(self.runtime.status(self.config)))
 
     def test_empty_key_missing_client_and_duplicate_start_are_rejected(self):
-        import faulthandler
-        faulthandler.dump_traceback_later(8)
-        self.addCleanup(faulthandler.cancel_dump_traceback_later)
         with self.assertRaises(ValueError):self.runtime.start(self.config,8765,"")
         self.binary.unlink()
         with self.assertRaises(ValueError):self.runtime.start(self.config,8765,"fixture-key")
         self.binary.write_bytes(b"fixture")
-        with patch("ssh_gate.runtime.subprocess.Popen",return_value=FakeProcess()),patch("ssh_gate.runtime.threading.Thread"):
+        with patch("ssh_gate.runtime.subprocess.Popen",return_value=FakeProcess()),patch("ssh_gate.runtime.threading", SimpleNamespace(Thread=MagicMock())):
             self.runtime.start(self.config,8765,"fixture-key")
             with self.assertRaises(ValueError):self.runtime.start(self.config,8765,"fixture-key")
 
@@ -72,7 +70,7 @@ class TunnelRuntimeTests(unittest.TestCase):
         captured={}
         def launch(argv,**kwargs):
             captured.update(argv=argv,env=kwargs["env"].copy());return FakeProcess()
-        with patch.dict(os.environ,{"TUNNEL_CLIENT_HTTP_PROXY":"http://wrong:8080","MCP_HTTP_PROXY":"http://wrong:8080","NO_PROXY":"*"}),patch("ssh_gate.runtime.subprocess.Popen",side_effect=launch),patch("ssh_gate.runtime.threading.Thread"):
+        with patch.dict(os.environ,{"TUNNEL_CLIENT_HTTP_PROXY":"http://wrong:8080","MCP_HTTP_PROXY":"http://wrong:8080","NO_PROXY":"*"}),patch("ssh_gate.runtime.subprocess.Popen",side_effect=launch),patch("ssh_gate.runtime.threading", SimpleNamespace(Thread=MagicMock())):
             self.runtime.start(self.config,8765,"fixture-key")
         self.assertEqual("http://127.0.0.1:7890",captured["env"]["CONTROL_PLANE_HTTP_PROXY"])
         self.assertNotIn("MCP_HTTP_PROXY",captured["env"])
@@ -83,14 +81,14 @@ class TunnelRuntimeTests(unittest.TestCase):
 
     def test_authenticated_environment_proxy_remains_out_of_snapshot_logs_and_config(self):
         secret="private-proxy-secret"
-        with patch.dict(os.environ,{"CONTROL_PLANE_HTTP_PROXY":"http://fixture:"+secret+"@127.0.0.1:7890"}),patch("ssh_gate.runtime.subprocess.Popen",return_value=FakeProcess()),patch("ssh_gate.runtime.threading.Thread"):
+        with patch.dict(os.environ,{"CONTROL_PLANE_HTTP_PROXY":"http://fixture:"+secret+"@127.0.0.1:7890"}),patch("ssh_gate.runtime.subprocess.Popen",return_value=FakeProcess()),patch("ssh_gate.runtime.threading", SimpleNamespace(Thread=MagicMock())):
             self.runtime.start(self.config,8765,"fixture-key")
         self.assertNotIn(secret,json.dumps(self.runtime.status(self.config)))
         self.assertNotIn(secret,(self.root/"config.json").read_text())
 
     def test_stop_terminates_child_and_clears_ready_state(self):
         process=FakeProcess()
-        with patch("ssh_gate.runtime.subprocess.Popen",return_value=process),patch("ssh_gate.runtime.threading.Thread"):
+        with patch("ssh_gate.runtime.subprocess.Popen",return_value=process),patch("ssh_gate.runtime.threading", SimpleNamespace(Thread=MagicMock())):
             self.runtime.start(self.config,8765,"fixture-key")
         self.runtime._ready=True
         self.runtime.stop()
