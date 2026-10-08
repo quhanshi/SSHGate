@@ -232,7 +232,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def verify_service_state(server_id: str, workspace_root: str, target_kind: str, client_request_id: str,
                              pid: int = 0, expected_start_ticks: str = "", expected_pgid: int = 0,
                              expected_cwd: str = "", unit_name: str = "", expected_main_pid: int = 0,
-                             expected_fragment_path: str = "", ports: list[int] | None = None) -> dict[str, Any]:
+                             expected_main_start_ticks: str = "", expected_fragment_path: str = "", ports: list[int] | None = None) -> dict[str, Any]:
         """Read-only post-stop check of original identity, user unit state and ports. Returns verified_stopped; does not signal."""
         return manager.submit_service(server_id, "service_verify",
             service_target(workspace_root, target_kind, pid, expected_start_ticks, expected_pgid,
