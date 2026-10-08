@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 BINARIES = {n: f"/usr/bin/{n}" for n in (
     "ls", "cat", "tail", "head", "pwd", "wc", "grep", "find", "stat", "du", "df",
-    "ps", "free", "uname", "git", "docker")}
+    "ps", "free", "uname", "ss", "systemctl", "git", "docker")}
 FORBIDDEN = set(";|&><`$(){}\n\r")
 
 @dataclass(frozen=True)
@@ -179,6 +179,27 @@ def scoped_read_paths(command: str) -> list[str]:
     return extra_paths + paths or ['.']
 
 
+def _systemctl_user_read(args: list[str]) -> bool:
+    """Only bounded observations of user services; no start/stop/reload/edit."""
+    if len(args) < 2 or args[0] != "--user":
+        return False
+    verb, tail = args[1], args[2:]
+    if verb == "list-units":
+        return len(tail) <= 3 and len(tail) == len(set(tail)) and all(
+            flag in {"--type=service", "--all", "--no-pager"} for flag in tail)
+    unit_ok = lambda x: bool(re.fullmatch(r"[A-Za-z0-9_@.-]+\.service", x))
+    if verb in {"cat", "is-active", "is-enabled"}:
+        return len(tail) == 1 and unit_ok(tail[0])
+    if verb != "show" or not tail or not unit_ok(tail[0]):
+        return False
+    options = tail[1:]
+    properties = {"UnitFileState", "ActiveState", "SubState", "MainPID",
+                  "ExecStart", "WorkingDirectory", "FragmentPath"}
+    return len(options) % 2 == 0 and all(
+        options[i] in {"-p", "--property"} and options[i + 1] in properties
+        for i in range(0, len(options), 2))
+
+
 def readonly_command(command: str) -> ReadOnlyDecision:
     no=lambda reason: ReadOnlyDecision(False, explanation=reason)
     if any(c in FORBIDDEN for c in command): return no("含 shell 操作符、替换或多行内容，需要人工审批")
@@ -192,6 +213,12 @@ def readonly_command(command: str) -> ReadOnlyDecision:
     args=argv[1:]; category="read_fs"
     if name == "find": valid=_find(args)
     elif name == "git": valid=_git(args); category="git_read"
+    elif name == "ss":
+        valid = args in (["-lntp"], ["-ltnp"], ["-lnt"], ["-ltn"], ["-tulpn"])
+        category = "diagnostics"
+    elif name == "systemctl":
+        valid = _systemctl_user_read(args)
+        category = "diagnostics"
     elif name == "docker":
         category="docker_read"
         specs={"ps":("aqs", {"--all", "--quiet", "--size", "--no-trunc", "--latest"}, {"--filter", "--last", "--format"}, "fn"), "logs":("ft", {"--follow", "--timestamps", "--details"}, {"--since", "--until", "--tail"}, ""), "inspect":("s", {"--size"}, {"--format", "--type"}, "f")}

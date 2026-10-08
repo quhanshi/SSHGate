@@ -1,0 +1,29 @@
+name: Python tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "mcp==1.30.0" "paramiko>=4.0,<5" "pywebview>=6.1,<7" "httpx>=0.28,<0.29" "cryptography>=46,<47"
+      - name: Run unit tests
+        run: |
+          python -m unittest discover -s tests -p 'test_core.py' -v
+          python -m unittest discover -s tests -p 'test_git_policy.py' -v
+          python -m unittest discover -s tests -p 'test_mcp_http.py' -v
+          python -m unittest discover -s tests -p 'test_readonly.py' -v

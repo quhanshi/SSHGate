@@ -132,15 +132,15 @@ Build-App.cmd
 
 ### Git 工作流
 
-Git 有单独的工具 `request_git_command`：`args` 传结构化参数（不含开头的 `git`，例如 `["pull", "--ff-only", "origin", "main"]`），`cwd` 指定仓库。`request_command` 和 `exec_in_session` 中以 `git` 开头的命令会被拒绝并指向这个工具。MCP 说明要求：**远端为 GitHub 时，阅读代码、修改、提交、推送、分支和 PR 优先使用官方 GitHub 连接器，而不是命令**；`inspect_repository` 对 GitHub 远端也会返回这条建议。
+Git 有单独的工具 `request_git_command`：`args` 传结构化参数（不含开头的 `git`，例如 `["pull", "--ff-only", "origin", "main"]`），`cwd` 指定仓库。`request_command` 和 `exec_in_session` 同样接受 Git；不符合自动只读范围的 Git 命令必须经 Windows 本地逐条审批。MCP 说明要求：**远端为 GitHub 时，阅读代码、修改、提交、推送、分支和 PR 优先使用官方 GitHub 连接器，而不是命令**；`inspect_repository` 对 GitHub 远端也会返回这条建议。
 
 先用 `inspect_repository` 获取真实仓库根和生效的 fetch/push 远端类型；执行前还会重新核验 URL 改写和简单 SSH Host 别名。GitHub.com、`ssh.github.com`、`*.ghe.com` 和本地配置的 `github_hosts` 采用部署策略。自建 GitHub Enterprise 主机或明确的 GitHub SSH 别名应在连接中登记。
 
-GitHub 代码编辑、提交、推送、分支和 PR 使用 GitHub 工具；服务器上只允许受限状态检查、明确远端的 fetch 和快进 pull。首次部署使用 `bootstrap_repository`：只接受已确认的 GitHub HTTPS/SSH URL、规范化绝对目标路径和合法 branch，目标必须不存在或为空；SSH URL 会先通过 `ssh -G` 核对生效的 HostName，避免 SSH 配置把 GitHub 名称重定向到未批准主机。可选 `expected_sha` 会在 clone 后切到该完整 SHA 并再次核验 HEAD；system/global Git config 与 hooks/fsmonitor 在该流程中关闭。不自动 stash、reset 或合并分叉历史。其他远端确认后可进行完整 Git 工作流；未知或混合远端拒绝完整 Git 写操作。直接 Git 命令使用 `cwd` 参数，不接受 `git -C`、全局配置覆盖或组合 shell 包装。任意已批准脚本和受信任项目代码仍有远端账号权限；这条策略不是对其内部行为的 OS 拦截器。
+GitHub 代码编辑、提交、推送、分支和 PR 优先使用 GitHub 工具；服务器上只有受限状态检查和明确远端的快进部署支持现有自动授权，其余 Git 命令须逐条本地审批。首次部署使用 `bootstrap_repository`：只接受已确认的 GitHub HTTPS/SSH URL、规范化绝对目标路径和合法 branch，目标必须不存在或为空；SSH URL 会先通过 `ssh -G` 核对生效的 HostName，避免 SSH 配置把 GitHub 名称重定向到未批准主机。可选 `expected_sha` 会在 clone 后切到该完整 SHA 并再次核验 HEAD；system/global Git config 与 hooks/fsmonitor 在该流程中关闭。不自动 stash、reset 或合并分叉历史。核验后的非 GitHub 远端仍支持现有 `git_full` 临时授权；未知或混合远端、`git worktree repair` 和特殊本地维护操作可以在逐条人工审批后执行。结构化 `request_git_command` 使用 `cwd` 参数；特殊 Git 全局选项可通过 `request_command` 手动审批。任意已批准脚本和受信任项目代码仍有远端账号权限；这条策略不是对其内部行为的 OS 拦截器。
 
 ## 中断恢复与命令历史
 
-`get_command_history(count=50, server_id="")` 返回当前 SSH Gate 进程中最新的请求记录。按条数取最近记录：`count=50` 表示最近 50 条，`count=0` 表示返回当前进程保留的全部记录；指定 `server_id` 时只返回该服务器的记录。结果包含原始命令/结构化参数、cwd、目的、审批类型、状态、退出码、结构化 result 和终止信息，但不直接返回 stdout/stderr。
+`get_command_history(count=50, server_id="")` 返回当前 SSH Gate 进程保留的最近最多 200 条请求（已结束旧请求滚动回收，运行和待审批任务不回收）。按条数取最近记录：`count=50` 表示最近 50 条，`count=0` 表示返回当前进程保留的全部记录；指定 `server_id` 时只返回该服务器的记录。结果包含原始命令/结构化参数、cwd、目的、审批类型、状态、退出码、结构化 result 和终止信息，但不直接返回 stdout/stderr。
 
 该接口用于聊天刷新、工具调用中断后恢复操作进度，不把 ChatGPT 自报的会话 ID 当作权限边界。完整命令只保存在当前进程内，应用重启后不会从审计日志恢复；持久化 `audit.jsonl` 仍只记录摘要和状态。调用方仍不应把凭据放进命令参数。
 

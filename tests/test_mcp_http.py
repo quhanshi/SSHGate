@@ -73,9 +73,8 @@ class MCPHTTPTests(unittest.TestCase):
                             bypass = await session.call_tool("approve_command", {"request_id": view["request_id"]})
                             self.assertTrue(bypass.isError)
                             raw_git = await session.call_tool("request_command", {**args, "command": "git status", "client_request_id": "raw-git"})
-                            self.assertTrue(raw_git.isError)
-                            self.assertIn("request_git_command", raw_git.content[0].text)
-                            self.assertIn("GitHub", raw_git.content[0].text)
+                            self.assertFalse(raw_git.isError)
+                            self.assertEqual("pending_approval", raw_git.structuredContent["status"])
                             self.assertFalse(calls)
                             # Simulate the trusted local Windows GUI click; never an MCP tool call.
                             manager.local_approve(view["request_id"], view["digest"])

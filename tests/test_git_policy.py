@@ -52,6 +52,15 @@ class GitPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_git_operation('git fetch origin', context('mixed', 'mixed'), '')
 
+    def test_locally_approved_git_is_not_blocked_by_mixed_remotes(self):
+        for command in ("git worktree repair /srv/moved",
+                        "git push github feature",
+                        "git -C /srv/moved worktree list"):
+            self.assertEqual(
+                "locally_approved",
+                check_git_command(None, None, command, "/srv/project",
+                                  threading.Event(), category="git_manual")["workflow"])
+
     def test_alternate_git_binary_global_options_and_shell_wrappers_are_rejected(self):
         for command in ['/tmp/git push origin main', 'git -C /other push origin main',
                         'git -c alias.x=push x', 'git status && git push origin main']:
