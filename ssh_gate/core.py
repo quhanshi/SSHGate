@@ -280,6 +280,10 @@ class ApprovalManager:
                 category = decision.category
                 roots = (grant.arguments["repo_path"],)
                 eligible = False
+        # Git writes without a temporary grant stay pending until an explicit
+        # Windows-local approval, regardless of the repository's remote mix.
+        if not grant_id and not eligible and re.match(r"^\s*(?:/usr/bin/|/bin/)?git(?:\s|$)", command):
+            category = "git_manual"
         executed = decision.executable_command if decision.allowed else command
         token = hashlib.sha256(self._job_secret + client_request_id.encode()).hexdigest()[:32]
         remote = build_remote_command(executed, cwd, timeout_seconds, token)
@@ -305,8 +309,20 @@ class ApprovalManager:
                 return self._view(previous)
             if sum(r.status in {"pending_approval", "queued_readonly", "queued_authorized"} for r in self._requests.values()) >= 20:
                 raise ValueError("已有 20 条待审批请求，请先处理")
+            # Retain up to 200 recent requests, but never discard an active one.
+            # Terminal events are already recorded in the append-only audit log.
             if len(self._requests) >= 200:
-                raise ValueError("本次会话已达 200 条请求上限；处理完后重启后端")
+                terminal = {"succeeded", "failed", "denied", "expired"}
+                for old_id, old in list(self._requests.items()):
+                    if len(self._requests) < 200:
+                        break
+                    if old.status not in terminal:
+                        continue
+                    del self._requests[old_id]
+                    if self._client_ids.get(old.client_request_id) == old_id:
+                        del self._client_ids[old.client_request_id]
+            if len(self._requests) >= 200:
+                raise ValueError("活动请求过多，无法安全回收；请先完成或取消现有任务")
             request = Request(str(uuid.uuid4()), client_request_id, payload, timestamp(),
                               self.clock() + min(60, self.config.approval_timeout_seconds))
             if payload.grant_id:
