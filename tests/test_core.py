@@ -241,6 +241,32 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(20, len(self.manager.list_local()))
         self.assertFalse(self.calls)
 
+    def test_history_retention_does_not_block_later_commands(self):
+        pending = self.submit("retained-pending", command="echo pending")
+        first = last = None
+        for i in range(215):
+            self.manager.local_gui_heartbeat()
+            view = self.submit(f"archive-{i}", command="echo old")
+            if i == 0:
+                first = view["request_id"]
+            last = view["request_id"]
+            self.manager.reject(view["request_id"])
+        self.assertEqual("pending_approval", self.manager.get(pending["request_id"])["status"])
+        self.assertEqual("denied", self.manager.get(last)["status"])
+        self.assertEqual(200, len(self.manager.list_local()))
+        with self.assertRaises(ValueError):
+            self.manager.get(first)
+
+    def test_git_worktree_repair_is_locally_approved_not_auto_granted(self):
+        view = self.submit("git-repair", command="git worktree repair /srv/moved")
+        self.assertEqual("pending_approval", view["status"])
+        self.assertFalse(view["readonly_eligible"])
+        self.assertEqual("git_manual", view["policy_category"])
+        self.assertFalse(self.calls)
+        self.approve(view)
+        self.assertEqual("succeeded", self.finish(view)["status"])
+        self.assertEqual("git worktree repair /srv/moved", self.calls[-1].command)
+
     def test_manual_shell_script_is_preserved_and_connection_is_resolved(self):
         view = self.submit(command="echo `hostname`; printf '%s' '$HOME'")
         self.assertEqual("example.org", view["ssh_settings"]["hostname"])
