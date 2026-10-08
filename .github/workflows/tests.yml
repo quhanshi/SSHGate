@@ -23,6 +23,8 @@ jobs:
           python -m pip install "mcp==1.30.0" "paramiko>=4.0,<5" "pywebview>=6.1,<7" "httpx>=0.28,<0.29" "cryptography>=46,<47"
       - name: Service-management regression
         run: python -m unittest discover -s tests -p 'test_service_ops.py' -v
+      - name: Reproduce runtime CI deadlock
+        run: timeout --signal=TERM --kill-after=5s 25s python -m unittest discover -s tests -p 'test_runtime.py' -v
       - name: Full Python suite (isolated modules)
         shell: bash
         run: |
