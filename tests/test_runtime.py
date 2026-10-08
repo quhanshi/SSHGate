@@ -49,6 +49,9 @@ class TunnelRuntimeTests(unittest.TestCase):
         self.assertNotIn("fixture-secret-key",json.dumps(self.runtime.status(self.config)))
 
     def test_empty_key_missing_client_and_duplicate_start_are_rejected(self):
+        import faulthandler
+        faulthandler.dump_traceback_later(8)
+        self.addCleanup(faulthandler.cancel_dump_traceback_later)
         with self.assertRaises(ValueError):self.runtime.start(self.config,8765,"")
         self.binary.unlink()
         with self.assertRaises(ValueError):self.runtime.start(self.config,8765,"fixture-key")
