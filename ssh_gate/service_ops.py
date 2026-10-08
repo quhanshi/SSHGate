@@ -236,20 +236,24 @@ elif mode in ("service_stop", "service_verify"):
     if kind == "user_service":
         before = unit_info(args["unit_name"])
         safe_unit(before, root)
+        if before["fragment_path"] != args["expected_fragment_path"]:
+            fail("PROCESS_IDENTITY_CHANGED: unit file changed")
         if mode == "service_stop" and (before["main_pid"] != args["expected_main_pid"] or
-            before["main_start_ticks"] != args["expected_main_start_ticks"] or
-            before["fragment_path"] != args["expected_fragment_path"]):
-            fail("PROCESS_IDENTITY_CHANGED: service identity changed")
+            before["main_start_ticks"] != args["expected_main_start_ticks"]):
+            fail("PROCESS_IDENTITY_CHANGED: service main PID changed")
         if mode == "service_stop":
             response = systemctl("stop", args["unit_name"])
             if response.returncode:
                 fail("systemctl --user stop failed")
         after = unit_info(args["unit_name"])
         remaining_ports = check_ports(wanted)
-        stopped = after["active_state"] in ("inactive", "failed") and not remaining_ports
+        original_pid_alive = (same_process(args["expected_main_pid"], args["expected_main_start_ticks"])
+                              if args["expected_main_pid"] else False)
+        stopped = (after["active_state"] in ("inactive", "failed") and
+                   not original_pid_alive and not remaining_ports)
         print(json.dumps({"ok": True, "signal_sent": mode == "service_stop",
-                          "verified_stopped": stopped, "service": after,
-                          "occupied_ports": remaining_ports,
+                          "verified_stopped": stopped, "original_identity_alive": original_pid_alive,
+                          "service": after, "occupied_ports": remaining_ports,
                           "restart_risk": after["restart"] not in ("", "no")}))
     elif kind in ("process", "process_group"):
         pid = args["pid"]
