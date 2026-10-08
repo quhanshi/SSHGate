@@ -99,6 +99,7 @@ class LocalTerminalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             terminals.open(80, 24)
 
+    @unittest.skipUnless(os.name == "nt", "Windows PATH semantics")
     def test_shell_environment_drops_launcher_state(self):
         venv = os.path.join("C:\\", "app", ".venv")
         env = {"Path": os.pathsep.join([os.path.join(venv, "Scripts"), "C:\\Windows"]), "VIRTUAL_ENV": venv,
