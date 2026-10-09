@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 BINARIES = {n: f"/usr/bin/{n}" for n in (
     "ls", "cat", "tail", "head", "pwd", "wc", "grep", "find", "stat", "du", "df",
-    "ps", "free", "uname", "ss", "systemctl", "git", "docker")}
+    "ps", "free", "uname", "ss", "systemctl", "git", "docker",
+    "id", "whoami", "hostname", "uptime", "nproc", "lsblk", "journalctl")}
 FORBIDDEN = set(";|&><`$(){}\n\r")
 
 @dataclass(frozen=True)
@@ -184,6 +185,9 @@ def _systemctl_user_read(args: list[str]) -> bool:
     if len(args) < 2 or args[0] != "--user":
         return False
     verb, tail = args[1], args[2:]
+    if verb == "list-unit-files":
+        return len(tail) <= 2 and len(set(tail)) == len(tail) and all(
+            flag in {"--type=service", "--no-pager"} for flag in tail)
     if verb == "list-units":
         return len(tail) <= 3 and len(tail) == len(set(tail)) and all(
             flag in {"--type=service", "--all", "--no-pager"} for flag in tail)
@@ -200,6 +204,32 @@ def _systemctl_user_read(args: list[str]) -> bool:
         for i in range(0, len(options), 2))
 
 
+def _journalctl_user_read(args: list[str]) -> bool:
+    """No system journal, follow, pager, output files, catalog or data/export formats."""
+    if len(args) < 5 or args[:2] != ["--user", "--no-pager"]:
+        return False
+    unit = None; lines = None; i = 2
+    while i < len(args):
+        key = args[i]
+        if key in {"-u", "--unit", "-n", "--lines"}:
+            if i + 1 >= len(args): return False
+            value = args[i + 1]
+            if key in {"-u", "--unit"}:
+                if unit is not None or not re.fullmatch(r"[A-Za-z0-9_.@:-]{1,160}\.service", value):
+                    return False
+                unit = value
+            else:
+                if lines is not None or not re.fullmatch(r"[0-9]{1,3}", value) or not 1 <= int(value) <= 200:
+                    return False
+                lines = int(value)
+            i += 2
+        elif key == "--output=short-iso" and "--output=short-iso" not in args[:i]:
+            i += 1
+        else:
+            return False
+    return unit is not None and lines is not None
+
+
 def readonly_command(command: str) -> ReadOnlyDecision:
     no=lambda reason: ReadOnlyDecision(False, explanation=reason)
     if any(c in FORBIDDEN for c in command): return no("含 shell 操作符、替换或多行内容，需要人工审批")
@@ -212,6 +242,27 @@ def readonly_command(command: str) -> ReadOnlyDecision:
     if name != "find" and any(c in command for c in "*?["): return no("通配符需使用结构化搜索接口，或人工审批")
     args=argv[1:]; category="read_fs"
     if name == "find": valid=_find(args)
+    elif name == "whoami": valid = args == []; category = "diagnostics"
+    elif name == "id":
+        valid = args in ([], ["-u"], ["-g"], ["-G"], ["-un"], ["-gn"], ["--user"],
+                         ["--group"], ["--groups"], ["--name", "--user"])
+        category = "diagnostics"
+    elif name == "hostname":
+        valid = args in ([], ["-f"], ["-s"], ["--fqdn"], ["--short"])
+        category = "diagnostics"
+    elif name == "uptime":
+        valid = args in ([], ["-p"], ["-s"], ["--pretty"], ["--since"])
+        category = "diagnostics"
+    elif name == "nproc":
+        valid = args in ([], ["--all"])
+        category = "diagnostics"
+    elif name == "lsblk":
+        valid = args in ([], ["-f"], ["--fs"], ["-p"], ["--paths"], ["-o", "NAME,SIZE,TYPE,MOUNTPOINT"],
+                         ["--output", "NAME,SIZE,TYPE,MOUNTPOINT"])
+        category = "diagnostics"
+    elif name == "journalctl":
+        valid = _journalctl_user_read(args)
+        category = "diagnostics"
     elif name == "git": valid=_git(args); category="git_read"
     elif name == "ss":
         valid = args in (["-lntp"], ["-ltnp"], ["-lnt"], ["-ltn"], ["-tulpn"])

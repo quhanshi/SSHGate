@@ -49,6 +49,38 @@ class ReadOnlyParsingTests(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertFalse(readonly_command(command).allowed)
 
+    def test_additional_diagnostics_are_narrow_and_never_shell_wrapped(self):
+        safe = (
+            "id", "id -un", "id --groups", "whoami", "hostname -f",
+            "uptime -p", "nproc --all", "lsblk -f",
+            "lsblk -o NAME,SIZE,TYPE,MOUNTPOINT",
+            "systemctl --user list-unit-files --type=service --no-pager",
+            "journalctl --user --no-pager -u dq-dev.service -n 100",
+            "journalctl --user --no-pager --unit dq-dev.service --lines 200 --output=short-iso",
+        )
+        rejected = (
+            "id root", "hostname --file /tmp/f", "hostname newname",
+            "uptime --since --foo", "nproc --ignore=0", "lsblk --output ENV",
+            "journalctl -u sshd.service --no-pager -n 100",
+            "journalctl --user --no-pager -u dq-dev.service -f -n 50",
+            "journalctl --user --no-pager -u dq-dev.service -n 0",
+            "journalctl --user --no-pager -u dq-dev.service -n 999",
+            "journalctl --user --no-pager -u dq-dev.service --output=json -n 100",
+            "journalctl --user --no-pager -u ../../secret.service -n 100",
+            "journalctl --user --no-pager -u dq-dev.service -n 100 --file /etc/shadow",
+            "systemctl --user list-unit-files --state=disabled",
+            "systemctl --user edit dq-dev.service",
+        )
+        for cmd in safe:
+            with self.subTest(command=cmd):
+                decision = readonly_command(cmd)
+                self.assertTrue(decision.allowed, decision.explanation)
+                self.assertEqual("diagnostics", decision.category)
+                self.assertTrue(decision.executable_command.startswith("exec /usr/bin/"))
+        for cmd in rejected:
+            with self.subTest(command=cmd):
+                self.assertFalse(readonly_command(cmd).allowed)
+
     def test_ll_uses_fixed_ls_binary(self):
         self.assertEqual("exec /usr/bin/ls -l /tmp", readonly_command("ll /tmp").executable_command)
 
