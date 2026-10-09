@@ -506,6 +506,14 @@ if test "$state" = NO; then echo STOPPED; else echo UNCONFIRMED; exit 4; fi
                     result = inspect_repository(client, sftp, args["path"] if roots else json.loads(payload.arguments)["path"],
                                                 stop, payload.github_hosts)
                     return RunResult(0, result=result)
+                if direct_git and roots and payload.policy_category == "git_manual":
+                    plan_paths = json.loads(payload.arguments).get("plan_git_paths", [])
+                    if plan_paths:
+                        from .policies import scope_contains
+                        for operand in plan_paths:
+                            canonical_operand = sftp.normalize(operand)
+                            if not scope_contains(canonical_operand, roots):
+                                raise ValueError("计划 Git 工作树实际路径越过批准工作区；未执行修复")
                 if direct_git:
                     from .git_policy import check_git_command
                     observe(phase="checking_repository")
