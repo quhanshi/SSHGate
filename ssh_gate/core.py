@@ -22,11 +22,12 @@ from .config import Config, Server, checked_text, integer, write_config
 from .readonly import readonly_command
 from .policies import python_test_command, scope_contains
 from .transfers import TransferStore, safe_name, zip_members
-from .ssh import SSHRunner, SSHSettings, build_remote_command, resolve_settings
+from .ssh import SSHRunner, SSHSettings, RunResult, build_remote_command, resolve_settings
 from .credentials import CredentialStore
 from .ssh_trace import MAX_CONNECTION_EVENTS
 from .authorizations import Grant, CAPABILITY_LABELS, PATTERN_SYNTAX, PS_PATTERN_SYNTAX, grant_arguments, preauthorized
 from .git_policy import git_args_command
+from .operation_plans import validate_plan
 from .service_ops import OPS as SERVICE_OPS, command as service_command
 from .local_machine import LocalRunner, build_script, launch_description, local_settings
 from .local_terminal import find_shell
@@ -538,6 +539,31 @@ class ApprovalManager:
                 if reserved: self.transfers.remove(tid,force=True)
                 raise
 
+    def submit_plan(self, server_id: str, workspace_root: str, cwd: str, steps: list,
+                    reason: str, client_request_id: str, timeout_seconds: int = 360) -> dict:
+        """One immutable, fully displayed plan; no temporary grants or remote approval."""
+        server = self.config.server(server_id)
+        if server.kind != "ssh":
+            raise ValueError("有限计划目前只支持 Linux SSH")
+        reason = checked_text(reason, "计划目的", multiline=True)
+        if len(reason) > 2000:
+            raise ValueError("计划目的过长")
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,80}", client_request_id):
+            raise ValueError("client_request_id 无效")
+        integer(timeout_seconds, 3, min(360, self.config.max_command_timeout_seconds), "计划总时限")
+        checked_steps, display, total = validate_plan(workspace_root, cwd, steps, timeout_seconds)
+        args = {"workspace_root": workspace_root, "cwd": cwd, "steps": checked_steps,
+                "total_timeout_seconds": total}
+        # Payload.digest binds *all* exact commands/paths/timeouts to the GUI approval ticket.
+        payload = Payload(server.id, server.label, server.ssh_target, display, cwd, reason,
+                          total, "固定步骤操作计划（逐项独立 SSH 命令）",
+                          resolve_settings(self.config, server), "", False,
+                          "只在 Windows 本地审批完整计划一次，不创建后续命令权限",
+                          operation="operation_plan",
+                          arguments=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                          policy_category="operation_plan_manual", github_hosts=server.github_hosts)
+        return self._admit(payload, client_request_id)
+
     def submit_service(self, server_id: str, operation: str, arguments: dict, reason: str,
                        client_request_id: str, timeout_seconds: int = 40) -> dict:
         """Structured Linux-only diagnostics and stops, gated by existing review."""
@@ -857,6 +883,66 @@ class ApprovalManager:
                           has_more_output=len(out)>stdout_cursor+limit or len(err)>stderr_cursor+limit)
             return result
 
+    def _run_plan(self, request: Request, emit, progress) -> RunResult:
+        """Execute only the commands frozen in the reviewed payload; stop at first failure."""
+        args = json.loads(request.payload.arguments)
+        root, cwd, steps = args["workspace_root"], args["cwd"], args["steps"]
+        if request.approval_kind != "local":
+            raise ValueError("操作计划未获得 Windows 本地审批")
+        runner = self.runner
+        completed = []
+        mutating_started = False
+        for step in steps:
+            if request.stop.is_set():
+                return RunResult(None, disconnected=True,
+                                 termination={"state": "remaining_steps_cancelled", "remote_group_terminated": True},
+                                 result={"steps": completed, "side_effects_possible": mutating_started,
+                                         "next_step_not_started": step["index"]})
+            # No editing/replanning or grant renewal between steps.
+            if step["kind"] not in {"check", "verify", "git_repair"}:
+                raise ValueError("未批准的计划步骤")
+            progress(phase="plan_step_" + str(step["index"]))
+            with self._lock:
+                request.result = {"steps": deepcopy(completed),
+                                  "current_step": step["index"],
+                                  "total_steps": len(steps),
+                                  "side_effects_possible": mutating_started}
+            emit("stdout", ("\n[STEP " + str(step["index"]) + "/" + str(len(steps)) +
+                            "] " + step["label"] + "\n").encode("utf-8"))
+            idx = str(step["index"]).encode("ascii")
+            token = hashlib.sha256(self._job_secret + request.id.encode("ascii") + b":" + idx).hexdigest()[:32]
+            subpayload = Payload(request.payload.server_id, request.payload.server_label,
+                                 request.payload.ssh_target, step["command"], cwd,
+                                 request.payload.reason, step["timeout_seconds"],
+                                 build_remote_command(step["executable"], cwd, step["timeout_seconds"], token),
+                                 request.payload.ssh_settings, step["executable"], False,
+                                 "单次本地审批的固定计划步骤", job_token=token,
+                                 policy_category=step["category"],
+                                 policy_roots=(root,), github_hosts=request.payload.github_hosts)
+            if step["kind"] == "git_repair":
+                mutating_started = True
+            result = (runner.execute(subpayload, emit, request.stop, progress)
+                      if hasattr(runner, "execute") else runner(subpayload, emit, request.stop))
+            success = result.exit_code == 0 and not result.error and not result.timed_out and not result.disconnected
+            completed.append({"index": step["index"], "kind": step["kind"],
+                              "label": step["label"], "status": "succeeded" if success else "failed",
+                              "exit_code": result.exit_code, "error": result.error,
+                              "timed_out": bool(result.timed_out), "disconnected": bool(result.disconnected)})
+            with self._lock:
+                request.result = {"steps": deepcopy(completed), "total_steps": len(steps),
+                                  "side_effects_possible": mutating_started}
+            if not success:
+                return RunResult(result.exit_code if result.exit_code not in (None, 0) else 1,
+                                 timed_out=result.timed_out, disconnected=result.disconnected,
+                                 error=f"计划第 {step['index']} 步失败，后续步骤未执行：{result.error or '退出非零或已中断'}",
+                                 termination=result.termination,
+                                 result={"steps": completed, "failed_step": step["index"],
+                                         "next_steps_skipped": len(steps) - step["index"],
+                                         "side_effects_possible": mutating_started})
+        return RunResult(0, result={"steps": completed, "completed_steps": len(completed),
+                                    "side_effects_possible": mutating_started,
+                                    "verification": "last_readonly_step_exit_zero"})
+
     def _run(self, request: Request) -> None:
         def emit(name: str, chunk: bytes):
             with self._lock:
@@ -888,7 +974,9 @@ class ApprovalManager:
         try:
             self.check_execution_authorization(request.payload)
             runner = self.local_runner if request.payload.workspace_roots else self.runner
-            if hasattr(runner,"execute"):
+            if request.payload.operation == "operation_plan":
+                result = self._run_plan(request, emit, progress)
+            elif hasattr(runner,"execute"):
                 result = runner.execute(request.payload,emit,request.stop,progress)
             else:
                 result = runner(request.payload, emit, request.stop)
