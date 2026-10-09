@@ -41,7 +41,7 @@ export function Gate({requests,details,selected,onSelect,open,onToggle,onReject,
    const d=details[r.request_id],kind=risk(d||r),progress=hold.holding?.id===r.request_id?hold.holding.progress:0,loading=!d;
    const remaining=Math.max(0,(r.approval_remaining_ms??r.approval_expires_in_seconds*1000)-Math.max(0,now-sample.at)),countdown=Math.min(1,remaining/((r.approval_timeout_seconds??60)*1000)),blocked=anyRunning&&r.operation!=='request_auto_approval';
    return <article key={r.request_id} data-request-id={r.request_id} tabIndex={0} onFocus={()=>onSelect(r.request_id)} onClick={()=>onSelect(r.request_id)} className={`gate-item ${kind} ${selected===r.request_id?'active':''} ${expanded.has(r.request_id)?'expanded':''} ${leaving[r.request_id]||''}`}>
-    <div className="gi-top"><span>{r.request_id===top&&<kbd className="gi-key" title="按 A 立即批准此条">A</kbd>}{r.server_label}</span><span className="risk">{r.operation==='operation_plan'?'有限操作计划':r.operation==='request_auto_approval'?'临时授权':kind==='destructive'?'破坏性':kind==='readonly'?'只读':'写入 / 人工'}</span></div>
+    <div className="gi-top"><span>{r.request_id===top&&r.operation!=='operation_plan'&&<kbd className="gi-key" title="按 A 立即批准此条">A</kbd>}{r.server_label}</span><span className="risk">{r.operation==='operation_plan'?'有限操作计划':r.operation==='request_auto_approval'?'临时授权':kind==='destructive'?'破坏性':kind==='readonly'?'只读':'写入 / 人工'}</span></div>
     <pre className="gi-cmd"><DisplayText text={d?.command||r.command_preview} danger/></pre>
     <div className="gi-why"><b>{d?.readonly_explanation||'正在读取完整请求…'}</b><br/>{r.reason}{r.operation==='operation_plan'&&<><br/><strong>逐项执行、失败即停；已完成修改不会自动回滚。</strong></>}</div>
     <div className="gi-meta">{d?`${d.cwd} · ${d.timeout_seconds}s`:'正在核对参数'}</div>
