@@ -80,7 +80,8 @@ def validate_plan(workspace_root: str, cwd: str, steps: list, max_timeout: int) 
         total += timeout
         validated.append({"index": index + 1, "kind": kind, "label": label, "command": raw,
                           "executable": executable, "category": category,
-                          "timeout_seconds": timeout})
+                          "timeout_seconds": timeout,
+                          "paths": paths if kind == "git_repair" else []})
     if validated[0]["kind"] != "check" or validated[-1]["kind"] != "verify":
         raise ValueError("计划必须以只读前置检查开始，以只读后置检查结束")
     if not 1 <= modifications <= 2:
