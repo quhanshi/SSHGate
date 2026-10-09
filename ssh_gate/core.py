@@ -917,8 +917,10 @@ class ApprovalManager:
                                  build_remote_command(step["executable"], cwd, step["timeout_seconds"], token),
                                  request.payload.ssh_settings, step["executable"], False,
                                  "单次本地审批的固定计划步骤", job_token=token,
-                                 policy_category=step["category"],
-                                 policy_roots=(root,), github_hosts=request.payload.github_hosts)
+                                 policy_category=step["category"], policy_roots=(root,),
+                                 arguments=json.dumps({"path": cwd, "plan_git_paths": step["paths"]},
+                                                      ensure_ascii=False, sort_keys=True),
+                                 github_hosts=request.payload.github_hosts)
             if step["kind"] == "git_repair":
                 mutating_started = True
             result = (runner.execute(subpayload, emit, request.stop, progress)
