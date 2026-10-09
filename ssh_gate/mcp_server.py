@@ -33,6 +33,7 @@ pushes, branches, issues and PRs. Automatic grants remain bounded to safe reads 
 Git deployment. Git writes, mixed remotes and worktree repair can run after explicit one-command
 Windows approval; they are never broadly auto-granted.
 Passwords, private-key passphrases and host-key confirmations are handled only in the Windows WebView.
+Diagnostic read-only allowlists include id/whoami/hostname/uptime/nproc/lsblk and bounded user journalctl with exact unit/line limits; never allow journal follow or arbitrary formats.
 Use structured SFTP tools for directory listing, bounded file search, stat and segmented reads.
 All long operations return a request_id: poll get_command_status or read_command_output.
 The local read-only switch and per-server category/directory policy control automatic admission.
