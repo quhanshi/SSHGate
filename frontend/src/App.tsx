@@ -83,6 +83,7 @@ export default function App(){
   const top=pending.find(r=>!leaving[r.request_id]);
   if(!top||quickApproving.current||hold.busy)return;
   if(!details[top.request_id]){notify('正在读取完整请求，请稍后再按 A',true);return;}
+  if(top.operation==='operation_plan'){setGateOpen(true);setGateSelected(top.request_id);notify('有限操作计划需先展开完整步骤，再按住审批按钮确认',true);return;}
   if(top.operation!=='request_auto_approval'&&data?.requests.some(r=>r.status==='running')){notify('已有命令正在运行；完成后再批准下一条',true);return;}
   quickApproving.current=true;hold.stop();setGateSelected(top.request_id);
   try{const review=await api('begin_review',top.request_id);await api('approve',top.request_id,review.ticket,true);await approved(top.request_id);}

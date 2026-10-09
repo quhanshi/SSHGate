@@ -17,7 +17,10 @@ from .history import command_history
 from .readonly import BINARIES
 
 INSTRUCTIONS = """SSH Gate local SSH access connector. Call list_servers first.
-For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
+For a finite maintenance sequence use request_operation_plan with pre-check, 1-2 git worktree repairs,
+ and post-check. The entire immutable plan needs one Windows approval, has no wildcard command authority,
+ stops on the first failure and never automatically rolls back completed writes.
+ For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
 It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status
 (with wait_seconds up to 20 seconds) and pass the returned grant_id to request_command. For a family of similar
 commands (npm run *, make test-*) use request_pattern_approval: one local approval, then matching commands run
@@ -101,6 +104,14 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     def request_command(server_id:str,command:str,reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
         """Submit a literal remote command for normal approval. Git is accepted too; non-read-only Git requires explicit Windows local approval. Prefer request_git_command for safely quoted arguments."""
         return manager.submit(server_id,command,reason,client_request_id,cwd,timeout_seconds,grant_id=grant_id)
+
+    @mcp.tool(annotations=write)
+    def request_operation_plan(server_id: str, workspace_root: str, cwd: str,
+                               steps: list[dict[str, Any]], reason: str,
+                               client_request_id: str, timeout_seconds: int = 360) -> dict[str, Any]:
+        """Request ONE Windows-local approval for 3–8 immutable steps on a single Linux server/root/cwd. First kind=check and last kind=verify accept strictly read-only `command`; 1–2 kind=git_repair steps require `paths` (1–3 absolute paths scoped to root). Optional per-step label and timeout_seconds (<=90); cumulative max 360s. No arbitrary shell, service stops, deletes, pushes, grants, or dynamic steps. Poll get_command_status: result.steps, failed_step, side_effects_possible; failure or termination stops remaining steps and does NOT roll back."""
+        return manager.submit_plan(server_id, workspace_root, cwd, steps, reason,
+                                   client_request_id, timeout_seconds)
 
     @mcp.tool(annotations=write)
     def request_git_command(server_id:str,args:list[str],reason:str,client_request_id:str,cwd:str='',timeout_seconds:int=300,grant_id:str='') -> dict[str,Any]:
