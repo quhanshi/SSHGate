@@ -107,6 +107,16 @@ def _segment_requires_review(tokens: list[str]) -> bool:
     program, operands = _program(args[0]), args[1:]
     if program in _SHELLS | _DYNAMIC | _CONTROL | _REVIEW_COMMANDS:
         return True
+    # A Python script (including via uv run) is opaque executable code.
+    # Ask once for a bounded command-pattern grant instead of silently
+    # interpreting "not on the dangerous-command list" as "safe".
+    if re.fullmatch(r"python(?:3(?:\.\d+)?)?", program):
+        return operands not in (["-V"], ["--version"], ["-h"], ["--help"])
+    if program in {"uv", "uvx"}:
+        # uv run [flags] can execute Python, shells and any project-installed binary.
+        if program == "uvx" or (operands and operands[0] == "run" and
+                                 operands[1:] not in (["--help"], ["-h"])):
+            return True
     if program.startswith("mkfs."):
         return True
     if program in {"python", "python3", "perl", "ruby", "node", "php", "lua", "pwsh", "powershell"}:
