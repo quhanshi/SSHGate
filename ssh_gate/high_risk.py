@@ -102,6 +102,8 @@ def _segment_requires_review(tokens: list[str]) -> bool:
     args = _unwrap(args)
     if not args:
         return True
+    if any(c in args[0] for c in ("$", "*", "?", "[", "]", "~")):
+        return True
     program, operands = _program(args[0]), args[1:]
     if program in _SHELLS | _DYNAMIC | _CONTROL | _REVIEW_COMMANDS:
         return True
@@ -155,7 +157,7 @@ def requires_local_approval(command: str) -> bool:
     if not isinstance(command, str) or not command.strip() or len(command.encode("utf-8")) > 32768:
         return True
     # Commands generated at runtime cannot be screened reliably.
-    if any(x in command for x in ("\n", "\r", "\x00", "\x1b", "$(", "\`", "<<", "$" + "{")):
+    if any(x in command for x in ("\n", "\r", "\x00", "\x1b", "$(", "`", "<<", "$" + "{")):
         return True
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
@@ -166,6 +168,8 @@ def requires_local_approval(command: str) -> bool:
         return True
     segment: list[str] = []
     for token in [*tokens, ";"]:
+        if token and all(c in ";&|<>()" for c in token) and token not in _SEPARATORS | _REDIRECT:
+            return True
         if token in _SEPARATORS:
             if _segment_requires_review(segment):
                 return True
