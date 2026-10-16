@@ -63,6 +63,33 @@ class LowFrictionApprovalIntegrationTests(unittest.TestCase):
         self.assertEqual("pending_approval", second["status"])
         self.assertEqual(["touch ordinary"], self.calls)
 
+    def test_python_scripts_need_a_rule_even_in_low_friction_mode(self):
+        original = self.submit("uv run python verify.py", "ungranted-script")
+        self.assertEqual("pending_approval", original["status"])
+        self.assertFalse(self.calls)
+
+        proposal = self.manager.request_pattern_approval(
+            "test", "/srv/project", ["uv run python *.py"],
+            "Run Python scripts in this project", "rule-request",
+            ttl_seconds=1800, max_uses=5)
+        self.assertEqual("pending_approval", proposal["status"])
+        self.assertFalse(self.calls)
+        request = self.manager.get(proposal["request_id"])
+        self.manager.local_approve(request["request_id"], request["digest"])
+        grant_id = self.manager.get_auto_approval_status(request["request_id"])["authorization"]["grant_id"]
+
+        accepted = self.manager.submit(
+            "test", "uv run python verify.py", "run reviewed script",
+            "with-rule", "/srv/project", grant_id=grant_id)
+        self.assertEqual("succeeded", self.done(accepted)["status"])
+        self.assertEqual(["uv run python verify.py"], self.calls)
+        self.assertEqual("temporary_grant", self.manager.get(accepted["request_id"])["approval_kind"])
+
+        rejected = self.manager.submit(
+            "test", "uv run python other.py", "new ungranted request",
+            "no-grant", "/srv/project")
+        self.assertEqual("pending_approval", rejected["status"])
+
     def test_invalid_mode_is_rejected_by_config_validator(self):
         self.path.write_text(json.dumps({
             "approval_mode": "never_approve",
