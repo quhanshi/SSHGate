@@ -97,7 +97,8 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
                             **({'workspace_roots':s.workspace_roots,'shell':'PowerShell','commands_require_local_approval':True} if s.kind=='local' else {})}
                            for s in manager.config.servers],
                 'auto_allow_readonly':manager.config.auto_allow_readonly,
-                'approval_required_for_all_commands':not manager.config.auto_allow_readonly,
+                 'approval_mode':manager.config.approval_mode,
+                'approval_required_for_all_commands':not manager.config.auto_allow_readonly and manager.config.approval_mode=='standard',
                 'auto_readonly_tools':['ll',*BINARIES], 'approval_location':'Windows 本地审批窗口'}
 
     @mcp.tool(annotations=write)
