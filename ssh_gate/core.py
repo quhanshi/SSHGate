@@ -458,7 +458,9 @@ class ApprovalManager:
         """Called again after SSH preflight, immediately before executing the actual operation."""
         if payload.policy_category == "non_dangerous":
             with self._lock:
-                if (self.config.approval_mode != "dangerous_only" or
+                locally_approved = any(r.payload is payload and r.approval_kind == "local"
+                                       for r in self._requests.values())
+                if not locally_approved and (self.config.approval_mode != "dangerous_only" or
                         not payload.readonly_eligible or payload.executed_command != payload.command or
                         requires_local_approval(payload.command)):
                     raise ValueError("宽松自动准入已失效或命令需要审批")
