@@ -45,6 +45,7 @@ MCP 不暴露“批准请求”“修改授权策略”“录入密码”“接�
 - `python_tests`、`git_deploy_pull` 必须在本地显式预授权且设置目录；自动部署限定 `origin/main`。`manual_only` 不产生免审批授权。
 - `git_full`、`exact_commands` 和 `command_patterns` 始终需要一次本地批准；shell 组合、包装和内联程序仍逐次审批。
 - `command_patterns`（`request_pattern_approval`）按参数匹配，不是前缀或正则匹配。程序名为字面值，通配只出现在参数里，且通配得到的参数不能是选项、绝对或 `~` 路径、`..`，所以 `npm run *` 不能变成 `npm run x --prefix /` 或 `npm exec ...`。审批时就会拒绝执行其参数的包装程序（`nohup`、`timeout`、`env`、`busybox`、`strace` 等）和 Git、shell、提权、删除命令；`sed`、`awk`、`vi` 这类把参数当脚本的程序不能带通配符。匹配后的命令被引用为固定 argv 再交给 `exec`，shell 不再展开。模式只约束命令行：被调用程序及其读取的项目文件（如 `package.json` 脚本、Makefile）仍可执行任意操作，批准时应把它等同于信任这些程序。
+- 宽松模式下，Python 脚本（包括 `uv run` 调用）也视为动态代码，默认需要本地审批；审批过命令模式并显式传入 `grant_id` 后才允许免逐次审批。同一规则不能让未携带授权 ID 的请求直接获得执行权限。
 - Python 脚本可显式申请 `request_pattern_approval`，例如 `uv run python *.py`（单个当前目录脚本）、`uv run python scripts/*.py`（指定目录下的脚本）、`uv run python **.py`（可跨目录的相对脚本）。审批后通过 `get_auto_approval_status` 取得 `grant_id`，每次执行须明确传递该 ID；不自动赋予后续所有调用方同等权力。通配符由参数匹配器处理，不会交给 shell 展开；`-c`、`-m`、绝对路径、`..` 和额外参数不会匹配 `uv run python *.py`。裸 `uv` 会按 `/usr/bin/uv` 执行，若安装在 `~/.local/bin/uv`，申请时应使用解析后的**绝对**程序路径。匹配任意 Python 脚本意味着信任该脚本及其依赖，可删除或修改系统文件；规则不是沙箱，也不能检查运行时脚本内容。
 - 授权计数在实际派发前消耗；派发失败也消耗，完全相同请求的重试不消耗第二次。
 - 排队启动、SSH 检查后和发出执行命令前再次校验授权。撤销、过期、配置变化或应用重启后拒绝新执行；关闭自动放行撤销当前授权。
