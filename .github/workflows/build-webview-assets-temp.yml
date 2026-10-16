@@ -1,0 +1,32 @@
+name: Update built WebView assets (temporary)
+on:
+  push:
+    branches: [feat/high-risk-only-auto-approval]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - name: Commit updated WebView assets
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ssh_gate/frontend/app.js ssh_gate/frontend/app.css ssh_gate/frontend/index.html
+          if ! git diff --cached --quiet; then
+            git commit -m "build: regenerate embedded React WebView assets"
+            git push origin HEAD:feat/high-risk-only-auto-approval
+          fi
