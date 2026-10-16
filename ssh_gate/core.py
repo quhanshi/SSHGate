@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Callable
 
 from .config import Config, Server, checked_text, integer, write_config
-from .readonly import readonly_command
+from .readonly import readonly_command, ReadOnlyDecision
+from .high_risk import requires_local_approval
 from .policies import python_test_command, scope_contains
 from .transfers import TransferStore, safe_name, zip_members
 from .ssh import SSHRunner, SSHSettings, RunResult, build_remote_command, resolve_settings
@@ -137,7 +138,7 @@ class ApprovalManager:
                     grant.revoked = True
             if not enabled:
                 for request in self._requests.values():
-                    if request.status == "queued_readonly":
+                    if request.status == "queued_readonly" and request.payload.policy_category != "non_dangerous":
                         request.status = "pending_approval"
             else:
                 # Turning the switch on applies to NEW requests; existing manual requests stay manual.
@@ -172,7 +173,12 @@ class ApprovalManager:
 
     def local_save_settings(self, settings: dict) -> None:
         with self._lock:
+            previous = self.config.approval_mode
             self.config = write_config(self.config, settings=settings)
+            if previous != self.config.approval_mode and self.config.approval_mode != "dangerous_only":
+                for request in self._requests.values():
+                    if request.status == "queued_readonly" and request.payload.policy_category == "non_dangerous":
+                        request.status = "pending_approval"
 
     def local_gui_heartbeat(self) -> None:
         with self._lock:
@@ -282,6 +288,11 @@ class ApprovalManager:
                 category = decision.category
                 roots = (grant.arguments["repo_path"],)
                 eligible = False
+        if not grant_id and self.config.approval_mode == "dangerous_only" and not requires_local_approval(command):
+            # This mode is intentionally lower-assurance than the bounded read-only parser.
+            # Do not rewrite the shell text, and recheck it before dispatch.
+            decision = ReadOnlyDecision(True, command, "宽松模式自动放行：仅进行高危特征筛查，不保证命令无副作用", "non_dangerous")
+            category, roots, eligible = "non_dangerous", (), True
         # Git writes without a temporary grant stay pending until an explicit
         # Windows-local approval, regardless of the repository's remote mix.
         if not grant_id and not eligible and re.match(r"^\s*(?:/usr/bin/|/bin/)?git(?:\s|$)", command):
@@ -329,7 +340,8 @@ class ApprovalManager:
                               self.clock() + min(60, self.config.approval_timeout_seconds))
             if payload.grant_id:
                 request.status = "queued_authorized"
-            if self.config.auto_allow_readonly and payload.readonly_eligible:
+            if payload.readonly_eligible and (self.config.auto_allow_readonly or
+                                              (self.config.approval_mode == "dangerous_only" and payload.policy_category == "non_dangerous")):
                 request.status = "queued_readonly"
             self._audit("submitted", request)  # Fail closed if audit cannot be written.
             self._requests[request.id] = request
@@ -444,6 +456,14 @@ class ApprovalManager:
 
     def check_execution_authorization(self, payload: Payload) -> None:
         """Called again after SSH preflight, immediately before executing the actual operation."""
+        if payload.policy_category == "non_dangerous":
+            with self._lock:
+                locally_approved = any(r.payload is payload and r.approval_kind == "local"
+                                       for r in self._requests.values())
+                if not locally_approved and (self.config.approval_mode != "dangerous_only" or
+                        not payload.readonly_eligible or payload.executed_command != payload.command or
+                        requires_local_approval(payload.command)):
+                    raise ValueError("宽松自动准入已失效或命令需要审批")
         if not payload.grant_id:
             return
         with self._lock:
@@ -812,6 +832,17 @@ class ApprovalManager:
                     continue
                 break
             if request.status == "queued_readonly":
+                if request.payload.policy_category == "non_dangerous":
+                    if (self.config.approval_mode != "dangerous_only" or
+                            not request.payload.readonly_eligible or
+                            request.payload.executed_command != request.payload.command or
+                            requires_local_approval(request.payload.command)):
+                        request.status = "pending_approval"
+                        continue
+                    self._start(request, "auto_high_risk_screen")
+                    if request.status == "running":
+                        break
+                    continue
                 if not self.config.auto_allow_readonly:
                     request.status = "pending_approval"
                     continue

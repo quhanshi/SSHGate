@@ -58,6 +58,7 @@ class Config:
     ssh_executable: str
     servers: tuple[Server, ...]
     auto_allow_readonly: bool = False
+    approval_mode: str = "standard"
     config_path: Path | None = None
     motion_enabled: bool = True
     ui_scale_percent: int = 100
@@ -167,6 +168,8 @@ def load_config(path: Path) -> Config:
         ids.add(sid)
     if type(data.get("auto_allow_readonly", True)) is not bool:
         raise ValueError("auto_allow_readonly 必须是 true 或 false")
+    if data.get("approval_mode", "standard") not in {"standard", "dangerous_only"}:
+        raise ValueError("approval_mode 必须是 standard 或 dangerous_only")
     ui = data.get("ui", {})
     if not isinstance(ui, dict) or type(ui.get("motion_enabled", True)) is not bool:
         raise ValueError("ui.motion_enabled 必须是布尔值")
@@ -197,6 +200,7 @@ def load_config(path: Path) -> Config:
         ssh_executable=ssh,
         servers=tuple(servers),
         auto_allow_readonly=data.get("auto_allow_readonly", True),
+        approval_mode=data.get("approval_mode", "standard"),
         config_path=path,
         motion_enabled=ui.get("motion_enabled", True),
         ui_scale_percent=integer(ui.get("scale_percent", 100), 90, 130, "界面缩放"),
@@ -226,7 +230,7 @@ def write_config(config: Config, *, server: Server | None = None, auto_allow_rea
             raise ValueError("要删除的连接不存在")
         data["servers"] = [s for s in data["servers"] if s["id"] != remove_server_id]
     if settings is not None:
-        allowed = {"listen_port", "approval_timeout_seconds", "max_command_timeout_seconds", "output_limit_bytes", "ui", "tunnel"}
+        allowed = {"listen_port", "approval_timeout_seconds", "max_command_timeout_seconds", "output_limit_bytes", "ui", "tunnel", "approval_mode"}
         if not isinstance(settings, dict) or set(settings) - allowed:
             raise ValueError("包含不允许修改的设置")
         data.update(settings)

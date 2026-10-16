@@ -23,8 +23,8 @@ For a finite maintenance sequence use request_operation_plan with pre-check, 1-2
  For repeated work, request_auto_approval for an explicit server/directory/capability/time/use scope.
 It grants only local preauthorized scopes or waits for one Windows approval. Poll get_auto_approval_status
 (with wait_seconds up to 20 seconds) and pass the returned grant_id to request_command. For a family of similar
-commands (npm run *, make test-*) use request_pattern_approval: one local approval, then matching commands run
-directly within its bounds. Git: prefer request_git_command (structured args). request_command also accepts Git;
+commands (npm run *, make test-*, uv run python *.py) use request_pattern_approval: one local approval, then matching commands run
+directly within its bounds when request_command includes the returned grant_id. For Python scripts, * does not match /; use scripts/*.py for a fixed folder, or **.py for nested relative scripts. Bare uv invokes /usr/bin/uv; if installed elsewhere, apply an explicit absolute uv path in the approved pattern. Granting scripts trusts their contents, including destructive side effects. Git: prefer request_git_command (structured args). request_command also accepts Git;
 non-read-only Git commands require per-command Windows approval. Inspect remotes when possible. For the first GitHub deployment into an empty path use bootstrap_repository.
 After an interrupted chat/tool run use get_command_history; count=0 returns all retained current-runtime requests
 and server_id optionally filters one configured server.
@@ -97,7 +97,8 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
                             **({'workspace_roots':s.workspace_roots,'shell':'PowerShell','commands_require_local_approval':True} if s.kind=='local' else {})}
                            for s in manager.config.servers],
                 'auto_allow_readonly':manager.config.auto_allow_readonly,
-                'approval_required_for_all_commands':not manager.config.auto_allow_readonly,
+                 'approval_mode':manager.config.approval_mode,
+                'approval_required_for_all_commands':not manager.config.auto_allow_readonly and manager.config.approval_mode=='standard',
                 'auto_readonly_tools':['ll',*BINARIES], 'approval_location':'Windows 本地审批窗口'}
 
     @mcp.tool(annotations=write)
@@ -129,7 +130,7 @@ def create_mcp(manager: ApprovalManager) -> FastMCP:
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False))
     def request_pattern_approval(server_id:str,repo_path:str,patterns:list[str],reason:str,client_request_id:str,
                                  ttl_seconds:int=1800,max_uses:int=50,max_timeout_seconds:int=300) -> dict[str,Any]:
-        """Request a temporary grant for commands matching argument patterns; never approve yourself. A pattern is one literal command line: a literal program then arguments, where * matches characters except path separators, ** also crosses directories, ? matches one character and a final ... matches any further arguments. Wildcard parts never produce options, absolute or ~ paths, drives or ..; option names are literal (use --name=* to vary a value). SSH servers: bare program names run as /usr/bin/NAME (else give an absolute path); no pipes, redirection, substitution, sudo, shells, rm or command wrappers (nohup, timeout, env, npx...); sed/awk/vi-style script programs take no wildcards. kind=local servers: PowerShell patterns such as "npm run *", "dotnet test ...", "Get-ChildItem -Path src\\**"; repo_path is a Windows path inside the workspace; command names are case-insensitive; no variables ($), subexpressions, script blocks, pipes, ';', '&', redirection, double quotes, Invoke-Expression/Start-Process/Remove-Item or other shells. Git is never covered: use request_git_command. Always needs one Windows approval within 60 seconds. Max 20 patterns, TTL <=3600s, uses <=100. Poll get_auto_approval_status for grant_id, then pass it to request_command or exec_in_session with cwd inside repo_path."""
+        """Request a temporary grant for commands matching argument patterns; never approve yourself. A pattern is one literal command line: a literal program then arguments, e.g. 'uv run python *.py' (one script in cwd), 'uv run python scripts/*.py' (one-level directory) or 'uv run python **.py' (nested relative paths). Use an absolute uv binary path if uv is not in /usr/bin; literal names resolve only to /usr/bin/NAME. Passing grant_id to request_command / exec_in_session is required; the rule is not a global bypass. where * matches characters except path separators, ** also crosses directories, ? matches one character and a final ... matches any further arguments. Wildcard parts never produce options, absolute or ~ paths, drives or ..; option names are literal (use --name=* to vary a value). SSH servers: bare program names run as /usr/bin/NAME (else give an absolute path); no pipes, redirection, substitution, sudo, shells, rm or command wrappers (nohup, timeout, env, npx...); sed/awk/vi-style script programs take no wildcards. kind=local servers: PowerShell patterns such as "npm run *", "dotnet test ...", "Get-ChildItem -Path src\\**"; repo_path is a Windows path inside the workspace; command names are case-insensitive; no variables ($), subexpressions, script blocks, pipes, ';', '&', redirection, double quotes, Invoke-Expression/Start-Process/Remove-Item or other shells. Git is never covered: use request_git_command. Always needs one Windows approval within 60 seconds. Max 20 patterns, TTL <=3600s, uses <=100. Poll get_auto_approval_status for grant_id, then pass it to request_command or exec_in_session with cwd inside repo_path."""
         return manager.request_pattern_approval(server_id,repo_path,patterns,reason,client_request_id,ttl_seconds,max_uses,max_timeout_seconds)
 
     @mcp.tool(annotations=read)

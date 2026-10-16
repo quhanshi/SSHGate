@@ -45,6 +45,8 @@ MCP 不暴露“批准请求”“修改授权策略”“录入密码”“接�
 - `python_tests`、`git_deploy_pull` 必须在本地显式预授权且设置目录；自动部署限定 `origin/main`。`manual_only` 不产生免审批授权。
 - `git_full`、`exact_commands` 和 `command_patterns` 始终需要一次本地批准；shell 组合、包装和内联程序仍逐次审批。
 - `command_patterns`（`request_pattern_approval`）按参数匹配，不是前缀或正则匹配。程序名为字面值，通配只出现在参数里，且通配得到的参数不能是选项、绝对或 `~` 路径、`..`，所以 `npm run *` 不能变成 `npm run x --prefix /` 或 `npm exec ...`。审批时就会拒绝执行其参数的包装程序（`nohup`、`timeout`、`env`、`busybox`、`strace` 等）和 Git、shell、提权、删除命令；`sed`、`awk`、`vi` 这类把参数当脚本的程序不能带通配符。匹配后的命令被引用为固定 argv 再交给 `exec`，shell 不再展开。模式只约束命令行：被调用程序及其读取的项目文件（如 `package.json` 脚本、Makefile）仍可执行任意操作，批准时应把它等同于信任这些程序。
+- 宽松模式下，Python 脚本（包括 `uv run` 调用）也视为动态代码，默认需要本地审批；审批过命令模式并显式传入 `grant_id` 后才允许免逐次审批。同一规则不能让未携带授权 ID 的请求直接获得执行权限。
+- Python 脚本可显式申请 `request_pattern_approval`，例如 `uv run python *.py`（单个当前目录脚本）、`uv run python scripts/*.py`（指定目录下的脚本）、`uv run python **.py`（可跨目录的相对脚本）。审批后通过 `get_auto_approval_status` 取得 `grant_id`，每次执行须明确传递该 ID；不自动赋予后续所有调用方同等权力。通配符由参数匹配器处理，不会交给 shell 展开；`-c`、`-m`、绝对路径、`..` 和额外参数不会匹配 `uv run python *.py`。裸 `uv` 会按 `/usr/bin/uv` 执行，若安装在 `~/.local/bin/uv`，申请时应使用解析后的**绝对**程序路径。匹配任意 Python 脚本意味着信任该脚本及其依赖，可删除或修改系统文件；规则不是沙箱，也不能检查运行时脚本内容。
 - 授权计数在实际派发前消耗；派发失败也消耗，完全相同请求的重试不消耗第二次。
 - 排队启动、SSH 检查后和发出执行命令前再次校验授权。撤销、过期、配置变化或应用重启后拒绝新执行；关闭自动放行撤销当前授权。
 - 撤销取消排队工作，不自动终止已经运行的工作。后者使用 `terminate_command`。
@@ -76,6 +78,14 @@ Git 推荐通过 `request_git_command` 以结构化参数提交，SSH Gate 用 `
 临时自动授权的直接 Git 命令在执行前仍重复核验远端；自动授权的 GitHub 服务器副本仅进行受限检查与指定远端的 fetch/快进 pull。GitHub 开发仍优先使用 GitHub 工具。GitHub 写入、混合远端及本地 worktree 维护可在 Windows 本地逐条明确批准后执行，但不会因远端已知而被自动放行。首次部署使用 `bootstrap_repository` 时只接受已确认的 GitHub HTTPS/SSH URL 和空/不存在的规范化绝对目标路径；SSH URL 先用 `ssh -G` 核对生效 HostName，防止 SSH 配置把 GitHub 名称重定向到未批准主机。该流程可绑定完整提交 SHA，关闭 hooks/fsmonitor，并通过 `GIT_CONFIG_NOSYSTEM=1` 与 `GIT_CONFIG_GLOBAL=/dev/null` 阻止 system/global Git 配置重写 URL；ProxyJump 等仍由 OpenSSH 处理。非 GitHub 远端确认后才接受 `git_full`，仍拒绝自动强制推送、删除分支、rebase exec 等选项。临时授权的固定执行路径关闭 hooks、fsmonitor、pager、外部 diff 和 textconv；Git 全局配置覆盖和组合命令不会自动授权。经人工批准的 Git 仍拥有远端账号权限，可能触发 hooks、filter 或外部副作用，必须在审批界面核对命令内容。
 
 远端账号配置和经本地批准的项目程序必须可信。任意脚本、Git filter、测试或构建程序可能调用 Git 或修改目录外资源；这里的直接 Git 策略不声称拦截其内部行为。真正限制这些副作用需要远端容器、账号和 OS 权限隔离。
+
+### 宽松命令准入（主动启用）
+
+可在本地“运行设置 → 命令准入”开启 `approval_mode: "dangerous_only"`，默认值为 `standard`。宽松模式**仅适用于远程 SSH 的文本命令**（包括会话中的命令）；不扩大本机 PowerShell、结构化上传、文件覆盖、服务控制或临时授权申请的免审批范围。
+
+此模式使用 `ssh_gate/high_risk.py` 对执行命令文本做**尽力而为**的高危特征筛查。普通命令（包括常见构建、测试、Git 写操作、安装和服务重启）可能直接执行；识别出的全局危险删除、重启/关机、磁盘抹除、系统关键路径覆盖、Git 强制破坏性操作及动态 shell 包装等仍必须在 Windows 界面逐次确认。不能解析、包含命令替换、复杂动态脚本或多行命令时保守要求人工审批。自动请求会在入队、派发以及远端 SSH 执行前重新核验；用户关闭宽松模式后尚未执行的命令不能继续自动放行。
+
+**风险提示：这种策略不能保证只拦截高危行为。** 任何看似普通的可执行程序、项目脚本、依赖安装、测试或构建工具都可能间接执行危险操作，且远端 PATH/文件内容/环境会变化。它不是安全机制的完整替代品，不适合不可信 MCP 客户端或生产环境高权限 SSH 账户。高风险用途请使用默认标准模式、低权限 SSH 账户或隔离容器。远程 GitHub 仓库开发仍应优先使用 GitHub 连接器。
 
 ## 4. SSH 主机身份
 
