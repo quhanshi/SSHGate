@@ -4,6 +4,7 @@
   "max_command_timeout_seconds": 3600,
   "output_limit_bytes": 1048576,
   "auto_allow_readonly": true,
+  "approval_mode": "standard",
   "ui": {
     "motion_enabled": true,
     "scale_percent": 100
