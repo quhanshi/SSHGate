@@ -250,6 +250,47 @@ class AuthorizationTests(unittest.TestCase):
         self.assertEqual(4, self.manager.grants[grant].uses)
         self.assertEqual(patterns, self.manager.list_auto_approvals()['authorizations'][0]['command_patterns'])
 
+    def test_uv_python_script_pattern_requires_one_local_grant_then_matches_scripts(self):
+        patterns = ['uv run python *.py', 'uv run python scripts/*.py',
+                    'uv run python tools/**.py']
+        grant = self.pattern_grant(patterns, key='uv-python')
+        request = self.manager.get(self.manager.grants[grant].request_id)
+        self.assertIn('uv run python *.py', request['command'])
+        for i, line in enumerate(['uv run python check.py',
+                                  'uv run python scripts/check.py',
+                                  'uv run python tools/nested/check.py']):
+            with self.subTest(line=line):
+                view = self.manager.submit('s', line, 'run reviewed scripts', 'uv-' + str(i),
+                                           '/srv/project', grant_id=grant)
+                self.assertEqual('succeeded', self.wait(view)['status'])
+        self.assertEqual('exec /usr/bin/uv run python check.py', self.calls[0].executed_command)
+        self.assertEqual('exec /usr/bin/uv run python tools/nested/check.py',
+                         self.calls[-1].executed_command)
+        for i, line in enumerate(['uv run python -c print(1)',
+                                  'uv run python -m pip', 'uv run python /etc/passwd',
+                                  'uv run python ../outside.py', 'uv run python ~/.ssh/id',
+                                  'uv run python check.py --delete', 'uv run python',
+                                  'uv run python check.txt', 'uv run python -',
+                                  'uv run --with evil python check.py',
+                                  'uv run python check.py;reboot',
+                                  'uv run python "$(id)"']):
+            with self.subTest(line=line), self.assertRaises(ValueError):
+                self.manager.submit('s', line, 'must not match', 'uv-bad-' + str(i),
+                                    '/srv/project', grant_id=grant)
+        with self.assertRaises(ValueError):
+            self.manager.submit('s', 'uv run python check.py', 'outside directory',
+                                'uv-outside', '/srv/other', grant_id=grant)
+        self.assertEqual(3, self.manager.grants[grant].uses)
+
+    def test_uv_script_rule_also_supports_exact_uv_binary_path(self):
+        grant = self.pattern_grant(['/home/user/.local/bin/uv run python *.py'], key='uv-absolute')
+        view = self.manager.submit('s', '/home/user/.local/bin/uv run python verify.py',
+                                   'run script', 'uv-absolute-request',
+                                   '/srv/project', grant_id=grant)
+        self.assertEqual('succeeded', self.wait(view)['status'])
+        self.assertEqual('exec /home/user/.local/bin/uv run python verify.py',
+                         self.calls[-1].executed_command)
+
     def test_pattern_wildcards_cannot_introduce_options_paths_or_shell(self):
         grant = self.pattern_grant(['npm run *', 'cat **', 'pytest --maxfail=* ...'])
         for line in ['npm run', 'npm run a b', 'npm run --prefix=/', 'npm run -x', 'npm run ../x', 'npm run ~',
