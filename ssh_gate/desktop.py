@@ -92,6 +92,7 @@ class DesktopAPI:
                                  for s in self._manager.sessions.values()],
                     "settings": {"listen_port": config.listen_port,
                         "auto_allow_readonly": config.auto_allow_readonly,
+                        "approval_mode": config.approval_mode,
                         "approval_timeout_seconds": config.approval_timeout_seconds,
                         "max_command_timeout_seconds": config.max_command_timeout_seconds,
                         "output_limit_bytes": config.output_limit_bytes,
@@ -291,7 +292,7 @@ class DesktopAPI:
 
     def save_settings(self, token, settings):
         def save():
-            if not isinstance(settings, dict) or set(settings) - {"listen_port", "approval_timeout_seconds", "max_command_timeout_seconds", "output_limit_bytes", "ui"}:
+            if not isinstance(settings, dict) or set(settings) - {"listen_port", "approval_timeout_seconds", "max_command_timeout_seconds", "output_limit_bytes", "ui", "approval_mode"}:
                 raise ValueError("应用设置参数无效")
             if "listen_port" in settings and settings["listen_port"] != self._manager.config.listen_port:
                 if self._tunnel.status(self._manager.config)["running"]:
