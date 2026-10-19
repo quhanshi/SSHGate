@@ -5,22 +5,36 @@ import {DisplayText} from './Text';
 import type {RequestDetail,RequestSummary} from '../types';
 export function useHoldApproval(onDone:(id:string)=>Promise<void>,onError:(e:unknown)=>void){
  const [holding,setHolding]=useState<{id:string;progress:number}|null>(null),[busy,setBusy]=useState<string|null>(null);
- const generation=useRef(0),frame=useRef<number|null>(null),live=useRef<{id:string;gen:number}|null>(null),busyRef=useRef(false);
+ const generation=useRef(0),frame=useRef<number|null>(null),live=useRef<{id:string;gen:number;complete:boolean;ticket:string|null}|null>(null),busyRef=useRef(false);
  const stop=useCallback(()=>{generation.current++;live.current=null;if(frame.current!==null)cancelAnimationFrame(frame.current);frame.current=null;setHolding(null);},[]);
- const begin=useCallback(async(id:string)=>{
-  if(live.current||busyRef.current)return;const gen=++generation.current;live.current={id,gen};setHolding({id,progress:0});
-  try{
-   const review=await api('begin_review',id);
-   if(live.current?.gen!==gen)return;
-   const duration=500,start=performance.now(),remaining=review.request.approval_remaining_ms??review.request.approval_expires_in_seconds*1000;
-   const advance=(now:number)=>{
-    if(now-start>=remaining){stop();return;}
-    if(live.current?.gen!==gen)return;const progress=Math.min(1,(now-start)/duration);setHolding({id,progress});
-    if(progress<1){frame.current=requestAnimationFrame(advance);return;}
-    live.current=null;frame.current=null;setHolding(null);busyRef.current=true;setBusy(id);
-    void api('approve',id,review.ticket,true).then(()=>onDone(id)).catch(onError).finally(()=>{busyRef.current=false;setBusy(null);});
-   };frame.current=requestAnimationFrame(advance);
-  }catch(e){if(live.current?.gen===gen){stop();onError(e);}}
+ const begin=useCallback((id:string)=>{
+  if(live.current||busyRef.current)return;
+  const gen=++generation.current;live.current={id,gen,complete:false,ticket:null};setHolding({id,progress:0});
+  const finish=()=>{
+   const pending=live.current;
+   if(!pending||pending.gen!==gen||!pending.complete||!pending.ticket)return;
+   live.current=null;
+   if(frame.current!==null)cancelAnimationFrame(frame.current);
+   frame.current=null;setHolding(null);busyRef.current=true;setBusy(id);
+   void api('approve',id,pending.ticket,true).then(()=>onDone(id)).catch(onError)
+    .finally(()=>{busyRef.current=false;setBusy(null);});
+  };
+  // The physical 0.5s hold begins immediately; backend review happens in parallel.
+  const duration=500,start=performance.now();
+  const advance=(now:number)=>{
+   const pending=live.current;
+   if(!pending||pending.gen!==gen)return;
+   const progress=Math.min(1,(now-start)/duration);
+   setHolding({id,progress});
+   if(progress<1){frame.current=requestAnimationFrame(advance);return;}
+   frame.current=null;pending.complete=true;finish();
+  };
+  frame.current=requestAnimationFrame(advance);
+  void api('begin_review',id).then(review=>{
+   const pending=live.current;
+   if(!pending||pending.gen!==gen)return;
+   pending.ticket=review.ticket;finish();
+  }).catch(e=>{if(live.current?.gen===gen){stop();onError(e);}});
  },[onDone,onError,stop]);
  useEffect(()=>{const cancel=()=>stop();const hide=()=>{if(document.hidden)stop();};window.addEventListener('blur',cancel);window.addEventListener('pointerup',cancel);window.addEventListener('pointercancel',cancel);window.addEventListener('keyup',cancel);document.addEventListener('visibilitychange',hide);return()=>{stop();window.removeEventListener('blur',cancel);window.removeEventListener('pointerup',cancel);window.removeEventListener('pointercancel',cancel);window.removeEventListener('keyup',cancel);document.removeEventListener('visibilitychange',hide);};},[stop]);
  return {holding,busy,begin,stop};
@@ -39,14 +53,14 @@ export function Gate({requests,details,selected,onSelect,open,onToggle,onReject,
   <div className="gate-head"><div><h2>请求审批</h2><span id="gate-count">{pending.length?`${pending.length} 条请求等待审批`:'没有待审请求'}</span></div><button className="icon-button gate-collapse" id="gate-collapse" onClick={()=>onToggle(false)} aria-label="收起请求审批">×</button></div>
   <div className="gate-list" id="gate-list" ref={listRef}>{pending.length?pending.map(r=>{
    const d=details[r.request_id],kind=risk(d||r),progress=hold.holding?.id===r.request_id?hold.holding.progress:0,loading=!d;
-   const remaining=Math.max(0,(r.approval_remaining_ms??r.approval_expires_in_seconds*1000)-Math.max(0,now-sample.at)),countdown=Math.min(1,remaining/((r.approval_timeout_seconds??60)*1000)),blocked=anyRunning&&r.operation!=='request_auto_approval';
+   const remaining=Math.max(0,(r.approval_remaining_ms??r.approval_expires_in_seconds*1000)-(r.approval_paused?0:Math.max(0,now-sample.at))),countdown=Math.min(1,remaining/((r.approval_timeout_seconds??60)*1000)),blocked=anyRunning&&r.operation!=='request_auto_approval';
    return <article key={r.request_id} data-request-id={r.request_id} tabIndex={0} onFocus={()=>onSelect(r.request_id)} onClick={()=>onSelect(r.request_id)} className={`gate-item ${kind} ${selected===r.request_id?'active':''} ${expanded.has(r.request_id)?'expanded':''} ${leaving[r.request_id]||''}`}>
     <div className="gi-top"><span>{r.request_id===top&&r.operation!=='operation_plan'&&<kbd className="gi-key" title="按 A 立即批准此条">A</kbd>}{r.server_label}</span><span className="risk">{r.operation==='operation_plan'?'有限操作计划':r.operation==='request_auto_approval'?'临时授权':kind==='destructive'?'破坏性':kind==='readonly'?'只读':'写入 / 人工'}</span></div>
     <pre className="gi-cmd"><DisplayText text={d?.command||r.command_preview} danger/></pre>
     <div className="gi-why"><b>{d?.readonly_explanation||'正在读取完整请求…'}</b><br/>{r.reason}{r.operation==='operation_plan'&&<><br/><strong>逐项执行、失败即停；已完成修改不会自动回滚。</strong></>}</div>
     <div className="gi-meta">{d?`${d.cwd} · ${d.timeout_seconds}s`:'正在核对参数'}</div>
     <div className="gi-detail">{d&&<><span>{d.workspace_roots?.length?`本机 · 工作区 ${d.workspace_roots.join('；')}`:`${d.ssh_settings.username}@${d.ssh_settings.hostname}:${d.ssh_settings.port}`}</span><br/><DisplayText text={d.executed_command}/><br/><span>SHA256 {d.digest}</span></>}</div>
-    <div className="gi-actions"><button className={'hold '+(hold.busy===r.request_id?'done':'')} style={{'--p':progress,'--remaining':countdown} as React.CSSProperties} disabled={loading||blocked||remaining<=0||!!hold.busy||!!leaving[r.request_id]||(r.operation==='operation_plan'&&!expanded.has(r.request_id))} onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();onSelect(r.request_id);void hold.begin(r.request_id);}} onPointerLeave={hold.stop} onKeyDown={e=>{if([' ','Enter'].includes(e.key)){e.preventDefault();if(!e.repeat)void hold.begin(r.request_id);}}} onKeyUp={hold.stop} aria-label={`按住批准 ${r.server_label}`}><i className="countdown" aria-hidden="true"/><i className="fill" aria-hidden="true"/><span>{hold.busy===r.request_id?'正在批准':blocked?'等待当前执行结束':remaining<=0?'审批已过期':r.operation==='operation_plan'&&!expanded.has(r.request_id)?'先展开完整计划步骤':'按住 0.5 秒批准'}</span>{!hold.busy&&<span className="countdown-number" aria-label="待审批剩余时间">{Math.ceil(remaining/1000)}s</span>}</button><button className="gi-reject" disabled={!!hold.busy||!!leaving[r.request_id]} onClick={e=>{e.stopPropagation();hold.stop();onReject(r.request_id);}}>拒绝</button></div>
+    <div className="gi-actions"><button className={'hold '+(hold.busy===r.request_id?'done':'')} style={{'--p':progress,'--remaining':countdown} as React.CSSProperties} disabled={loading||blocked||remaining<=0||!!hold.busy||!!leaving[r.request_id]||(r.operation==='operation_plan'&&!expanded.has(r.request_id))} onPointerDown={event=>{if(event.button!==0)return;event.preventDefault();event.currentTarget.focus();onSelect(r.request_id);void hold.begin(r.request_id);}} onPointerLeave={hold.stop} onKeyDown={e=>{if([' ','Enter'].includes(e.key)){e.preventDefault();if(!e.repeat)void hold.begin(r.request_id);}}} onKeyUp={hold.stop} aria-label={`按住批准 ${r.server_label}`}><i className="countdown" aria-hidden="true"/><i className="fill" aria-hidden="true"/><span>{hold.busy===r.request_id?'正在批准':blocked?(r.approval_paused?'计时暂停 · 等待当前命令':'等待当前执行结束'):remaining<=0?'审批已过期':r.operation==='operation_plan'&&!expanded.has(r.request_id)?'先展开完整计划步骤':'按住 0.5 秒批准'}</span>{!hold.busy&&<span className="countdown-number" aria-label="待审批剩余时间">{r.approval_paused?"⏸ ":""}{Math.ceil(remaining/1000)}s</span>}</button><button className="gi-reject" disabled={!!hold.busy||!!leaving[r.request_id]} onClick={e=>{e.stopPropagation();hold.stop();onReject(r.request_id);}}>拒绝</button></div>
     <div className="gi-links"><button className="gi-more" onClick={()=>setExpanded(prev=>{const next=new Set(prev);next.has(r.request_id)?next.delete(r.request_id):next.add(r.request_id);return next;})}>{r.operation==='operation_plan'?(expanded.has(r.request_id)?'收起计划步骤':'展开完整计划步骤'):(expanded.has(r.request_id)?'收起命令':'展开命令')}</button><button className="gi-more" onClick={()=>onDetail(r.request_id)}>完整请求 ↗</button></div>
    </article>;
   }):<div className="gate-empty"><span className="gate-mark">✓</span><br/>没有请求等待审批<br/><span>只读请求按本地策略自动放行。</span></div>}</div>
