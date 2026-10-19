@@ -57,11 +57,11 @@ MCP 提交远端操作后，`ApprovalManager` 生成请求并冻结执行参数�
 | --- | --- | --- |
 | 符合本地自动策略 | `queued_readonly` | 本地 UI 在线且执行器空闲，重复核验规则 |
 | 携带匹配的临时授权 | `queued_authorized` | 本地 UI 在线且执行器空闲，重复核验授权 |
-| 其他操作 | `pending_approval` | 60 秒内完成本地审批，执行器空闲 |
+| 其他操作 | `pending_approval` | 无命令执行时，按剩余审批时间完成本地审批；执行器空闲才允许执行 |
 
 可选的 `dangerous_only` 模式把普通远程命令也纳入 `queued_readonly` 的自动队列（保留原状态名以兼容现有 UI），类别为 `non_dangerous`；入队、队列派发和 SSH 执行前检查高危特征，无法判断时退回 `pending_approval`。这是便利性筛选，不提供危险行为拦截保证。
 
-命令启动后为 `running`，最终进入 `succeeded / failed / cancelled / terminated` 等结束状态。排队和待审批请求最长保留 60 秒。
+命令启动后为 `running`，最终进入 `succeeded / failed / cancelled / terminated` 等结束状态。单条待审批/排队请求的**有效计时**仍最多 60 秒；但若另一条命令正在执行，因执行器繁忙而无法推进的请求会冻结剩余时间，命令结束后恢复计时。`request_auto_approval` 不受执行器互斥限制，因此不冻结。冻结由后端单调时钟维护，`snapshot` 与详情同时返回 `approval_paused`，而非仅在前端隐藏倒计时。
 
 授权申请使用同一请求流程，但批准时只在本机创建临时授权并把申请标记为 `succeeded`，不启动 SSH worker。授权从批准时开始计时。调用方查询 `get_auto_approval_status` 获得 `grant_id`，随后把它传给 `request_command`；没有环境覆盖的受控会话也支持该参数。带环境变量的会话仍逐次审批。
 

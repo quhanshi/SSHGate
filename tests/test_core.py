@@ -89,6 +89,48 @@ class CoreTests(unittest.TestCase):
         self.assertEqual("expired", manager.get(view["request_id"])["status"])
         manager.close()
 
+    def test_queued_manual_approval_clock_pauses_during_running_command(self):
+        fake_clock = [100.0]
+        self.manager.clock = lambda: fake_clock[0]
+        self.manager.local_gui_heartbeat()
+        running = self.submit("clock-running", command="echo start")
+        self.approve(running)
+        self.assertTrue(self.started.wait(1))
+        blocked = self.submit("clock-blocked", command="echo second")
+        rid = blocked["request_id"]
+        self.assertTrue(blocked["approval_paused"])
+        remaining = blocked["approval_remaining_ms"]
+        fake_clock[0] += 90
+        self.assertEqual("pending_approval", self.manager.get(rid)["status"])
+        self.assertEqual(remaining, self.manager.get(rid)["approval_remaining_ms"])
+        self.assertTrue(self.manager.list_summaries()[0]["approval_paused"])
+        self.release.set()
+        self.finish(running)
+        resumed = self.manager.get(rid)
+        self.assertFalse(resumed["approval_paused"])
+        self.assertEqual(remaining, resumed["approval_remaining_ms"])
+        fake_clock[0] += 11
+        self.assertEqual("expired", self.manager.get(rid)["status"])
+
+    def test_manual_approval_clock_still_expires_when_idle(self):
+        clock = [100.0]
+        self.manager.clock = lambda: clock[0]
+        self.manager.local_gui_heartbeat()
+        queued = self.submit("clock-idle", command="echo idle")
+        self.assertFalse(queued["approval_paused"])
+        clock[0] += 11
+        self.assertEqual("expired", self.manager.get(queued["request_id"])["status"])
+
+    def test_output_decode_cache_invalidates_on_new_output(self):
+        view = self.submit("decode-cache", command="echo done")
+        current = self.manager.get(view["request_id"])
+        request = self.manager._requests[view["request_id"]]
+        self.assertIn("key", request.decoded_output_cache)
+        self.approve(view)
+        result = self.finish(view)
+        self.assertEqual("完成\n", result["stdout"])
+        self.assertEqual(request.decoded_output_cache["stdout"], result["stdout"])
+
     def test_no_gui_and_unresponsive_gui_fail_closed(self):
         clock = [100.0]
         manager = ApprovalManager(self.config, clock=lambda: clock[0])

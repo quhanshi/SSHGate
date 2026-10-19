@@ -53,43 +53,48 @@ class DesktopAPI:
     def _reply(self, token, fn):
         try:
             self._check(token)
-            with self._lock:
-                # A capability-checked call comes from the live local WebView, including
-                # a user returning from a native file dialog. No background heartbeat exists.
-                self._manager.local_gui_heartbeat()
-                return {"ok": True, "data": fn()}
+            # The manager owns request-state locking. A long status read or native
+            # file dialog must not serialize unrelated approvals at the bridge.
+            self._manager.local_gui_heartbeat()
+            return {"ok": True, "data": fn()}
         except (ValueError, OSError, KeyError, TypeError) as exc:
             return {"ok": False, "error": str(exc)}
 
     def snapshot(self, token):
         def take():
-            self._manager.local_gui_heartbeat()
             runner = self._manager.runner
             states = runner.connection_states() if hasattr(runner, "connection_states") else {}
             config = self._manager.config
-            if self._active_prompt and self._active_prompt.done.is_set():
-                self._active_prompt = self._prompt_id = None
-            if not self._active_prompt:
-                prompts = getattr(runner, "prompts", None)
-                self._active_prompt = prompts.next() if prompts else None
-                if self._active_prompt:
-                    self._prompt_id = secrets.token_urlsafe(20)
-            prompt = ({"id": self._prompt_id, "kind": self._active_prompt.kind, "data": self._active_prompt.data}
-                      if self._active_prompt else None)
+            with self._lock:
+                if self._active_prompt and self._active_prompt.done.is_set():
+                    self._active_prompt = self._prompt_id = None
+                if not self._active_prompt:
+                    prompts = getattr(runner, "prompts", None)
+                    self._active_prompt = prompts.next() if prompts else None
+                    if self._active_prompt:
+                        self._prompt_id = secrets.token_urlsafe(20)
+                prompt = ({"id": self._prompt_id, "kind": self._active_prompt.kind, "data": self._active_prompt.data}
+                          if self._active_prompt else None)
             tunnel = self._tunnel.status(config)
             try:
                 tunnel["api_key_saved"] = bool(self._credentials and self._credentials.has(self._TUNNEL_API_KEY_REF))
             except (OSError, ValueError):
                 tunnel["api_key_saved"] = False
+            # Worker threads can update sessions and diagnostics while an unrelated
+            # status probe is in flight. Copy these under the manager's own lock.
+            with self._manager._lock:
+                sessions = [{k: v for k, v in entry.items() if k != "environment"}
+                            | {"environment_keys": list(entry["environment"])}
+                            for entry in self._manager.sessions.values()]
+                diagnostics = dict(self._manager.server_info)
             return {"version": __version__, "uptime_seconds": int(time.monotonic() - self._started),
                     "mcp": self._host.status(), "tunnel": tunnel,
                     "servers": [{**asdict(s), "connected": s.kind == "local" or states.get(s.id, False),
-                                 "last_diagnostics": self._manager.server_info.get(s.id)} for s in config.servers],
+                                 "last_diagnostics": diagnostics.get(s.id)} for s in config.servers],
                     "requests": self._manager.list_summaries(), "prompt": prompt,
                     "authorizations": self._manager.list_auto_approvals()["authorizations"],
                     "transfers": self._manager.transfers.list(),
-                    "sessions": [{k:v for k,v in s.items() if k!="environment"} | {"environment_keys":list(s["environment"])}
-                                 for s in self._manager.sessions.values()],
+                    "sessions": sessions,
                     "settings": {"listen_port": config.listen_port,
                         "auto_allow_readonly": config.auto_allow_readonly,
                         "approval_mode": config.approval_mode,
@@ -110,15 +115,17 @@ class DesktopAPI:
             if view["status"] != "pending_approval":
                 raise ValueError("此请求已被处理或过期")
             now = time.monotonic()
-            self._reviews = {k: v for k, v in self._reviews.items() if v[2] > now}
-            ticket = secrets.token_urlsafe(32)
-            self._reviews[ticket] = (request_id, view["digest"], now + min(60, view["approval_remaining_ms"] / 1000))
+            with self._lock:
+                self._reviews = {k: v for k, v in self._reviews.items() if v[2] > now}
+                ticket = secrets.token_urlsafe(32)
+                self._reviews[ticket] = (request_id, view["digest"], now + min(60, view["approval_remaining_ms"] / 1000))
             return {"ticket": ticket, "request": view}
         return self._reply(token, begin)
 
     def approve(self, token, request_id, ticket, confirmed):
         def execute():
-            review = self._reviews.pop(ticket, None)
+            with self._lock:
+                review = self._reviews.pop(ticket, None)
             if confirmed is not True or not review or review[0] != request_id or review[2] <= time.monotonic():
                 raise ValueError("请重新打开审批窗口并勾选完整命令检查")
             self._manager.local_approve(request_id, review[1])
@@ -240,8 +247,10 @@ class DesktopAPI:
 
     def answer_prompt(self, token, prompt_id, answer=None):
         def answer_local():
-            prompt = self._active_prompt
-            if not prompt or self._prompt_id != prompt_id or prompt.done.is_set():
+            with self._lock:
+                prompt = self._active_prompt
+                matches = bool(prompt and self._prompt_id == prompt_id and not prompt.done.is_set())
+            if not matches:
                 raise ValueError("登录输入已过期或取消")
             if answer is not None:
                 if prompt.kind == "host_key":
@@ -253,9 +262,12 @@ class DesktopAPI:
                       or not isinstance(answer["secret"], str) or not answer["secret"] or len(answer["secret"]) > 4096
                       or type(answer.get("remember", False)) is not bool):
                     raise ValueError("登录输入无效")
-            prompt.answer = answer
-            prompt.done.set()
-            self._active_prompt = self._prompt_id = None
+            with self._lock:
+                if self._active_prompt is not prompt or self._prompt_id != prompt_id or prompt.done.is_set():
+                    raise ValueError("登录输入已过期或取消")
+                prompt.answer = answer
+                prompt.done.set()
+                self._active_prompt = self._prompt_id = None
         return self._reply(token, answer_local)
 
     def choose_file(self, token, purpose):

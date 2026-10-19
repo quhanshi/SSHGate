@@ -22,7 +22,7 @@ export function Scene({servers,requests,focus,effects,online,terrain,orbits,orbi
  const canvas=useRef<HTMLCanvasElement>(null),latest=useRef({servers,requests,focus,effects,online,orbits,orbitServer,reduced});latest.current={servers,requests,focus,effects,online,orbits,orbitServer,reduced};
  const control=useRef<()=>void>(()=>{});
  useEffect(()=>{
-  const el=canvas.current!,ctx=el.getContext('2d')!,layer=document.createElement('canvas'),lctx=layer.getContext('2d')!;let frame:number|null=null,last=0,previous=0,phase=0,spawn=1000,width=0,height=0,ratio=0,signature='',built=-1e9;
+  const el=canvas.current!,ctx=el.getContext('2d')!,layer=document.createElement('canvas'),lctx=layer.getContext('2d')!;let frame:number|null=null,last=0,previous=0,phase=0,spawn=1000,width=0,height=0,ratio=0,signature='',built=-1e9,renderCost=0;
   const paintOrbit=createOrbitPainter();
   let pool=CORPUS;const cache=new Map<number,Row>();
   const build=()=>{const now=performance.now(),raw=terrain.current.join('\n'),sig=raw.slice(-9000);if(sig===signature||now-built<2000)return;signature=sig;built=now;pool=[...redact(raw).split('\n').map(t=>t.trim()).filter(Boolean).slice(-24),...CORPUS];};
@@ -98,8 +98,8 @@ export function Scene({servers,requests,focus,effects,online,terrain,orbits,orbi
    lctx.setTransform(ratio,0,0,ratio,0,0);lctx.clearRect(0,0,width,height);land(lctx,w,horizon,height+20,dim,low);tint(w,horizon,t,danger);
    ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.drawImage(layer,0,0);ctx.restore();nodes(v,w,h,t,anim);
   };
-  const animate=(now:number)=>{frame=requestAnimationFrame(animate);const v=latest.current;if(now-last<1000/(v.effects==='low'?20:30))return;const delta=previous?Math.min(now-previous,100):0;previous=now;last=now;
-   if(v.online&&v.effects!=='off'){phase+=delta*.0005*(v.effects==='low'?.5:1)*(v.requests.some(r=>r.status==='pending_approval'&&risk(r)==='destructive')?.38:1);while(phase>=1){phase-=1;spawn++;}}draw(now);};
+  const animate=(now:number)=>{frame=requestAnimationFrame(animate);const v=latest.current;if(now-last<Math.max(1000/(v.effects==='low'?20:30),renderCost*3))return;const delta=previous?Math.min(now-previous,100):0;previous=now;last=now;
+   if(v.online&&v.effects!=='off'){phase+=delta*.0005*(v.effects==='low'?.5:1)*(v.requests.some(r=>r.status==='pending_approval'&&risk(r)==='destructive')?.38:1);while(phase>=1){phase-=1;spawn++;}}const began=performance.now();draw(now);const elapsed=performance.now()-began;renderCost=renderCost?renderCost*.85+elapsed*.15:elapsed;};
   const sync=()=>{if(document.hidden||latest.current.effects==='off'){if(frame!==null)cancelAnimationFrame(frame);frame=null;previous=0;if(!document.hidden)draw(0);}else if(frame===null)frame=requestAnimationFrame(animate);};
   control.current=sync;
   resize();sync();window.addEventListener('resize',resize);document.addEventListener('visibilitychange',sync);
