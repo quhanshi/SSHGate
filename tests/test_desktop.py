@@ -62,6 +62,28 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(self.api.approve(self.token,rid,review["ticket"],True)["ok"])
         self.assertEqual(1,len(self.runner.calls))
 
+    def test_slow_snapshot_does_not_block_a_new_review(self):
+        original = self.tunnel.status
+        entered, release = threading.Event(), threading.Event()
+        def slow_status(config):
+            entered.set()
+            release.wait(2)
+            return original(config)
+        self.tunnel.status = slow_status
+        view = self.submit_manual()
+        thread = threading.Thread(target=lambda: self.api.snapshot(self.token), daemon=True)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(1))
+            before = time.monotonic()
+            review = self.api.begin_review(self.token, view["request_id"])
+            self.assertTrue(review["ok"], review)
+            self.assertLess(time.monotonic() - before, 0.8)
+        finally:
+            release.set()
+            thread.join(timeout=2)
+            self.tunnel.status = original
+
     def test_review_ticket_cannot_approve_a_different_request(self):
         first = self.submit_manual()
         second = self.submit_manual("printf second")
