@@ -44,7 +44,7 @@ export function Gate({requests,details,selected,onSelect,open,onToggle,onReject,
  const [expanded,setExpanded]=useState(new Set<string>()),listRef=useRef<HTMLDivElement>(null);
  const [now,setNow]=useState(performance.now());
  const sample=useMemo(()=>({at:performance.now(),requests}),[requests]);
- useEffect(()=>{const timer=setInterval(()=>setNow(performance.now()),100);return()=>clearInterval(timer);},[]);
+ useEffect(()=>{const hasPending=requests.some(r=>r.status==='pending_approval'||!!leaving[r.request_id]);if(!hasPending)return;setNow(performance.now());const timer=setInterval(()=>setNow(performance.now()),250);return()=>clearInterval(timer);},[requests.some(r=>r.status==='pending_approval'||!!leaving[r.request_id])]);
  const pending=requests.filter(r=>r.status==='pending_approval'||leaving[r.request_id]);
  const anyRunning=requests.some(r=>r.status==='running'),top=pending.find(r=>!leaving[r.request_id])?.request_id;
  useEffect(()=>{if(selected)listRef.current?.querySelector(`[data-request-id="${CSS.escape(selected)}"]`)?.scrollIntoView({block:'nearest'});},[selected]);
