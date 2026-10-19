@@ -76,6 +76,7 @@ class Request:
     payload: Payload
     created_at: str
     expires_monotonic: float
+    approval_paused_since: float | None = None
     status: str = "pending_approval"
     approved_at: str | None = None
     approval_kind: str = "none"
@@ -85,6 +86,7 @@ class Request:
     stdout: bytearray = field(default_factory=bytearray)
     stderr: bytearray = field(default_factory=bytearray)
     output_truncated: bool = False
+    decoded_output_cache: dict = field(default_factory=dict, repr=False)
     stop: threading.Event = field(default_factory=threading.Event)
     phase: str = "waiting_approval"
     phase_history: list = field(default_factory=list)
@@ -201,9 +203,33 @@ class ApprovalManager:
             out.flush()
             os.fsync(out.fileno())
 
-    def _expire(self) -> None:
+    def _sync_approval_pause(self) -> None:
+        """Freeze remaining approval time while another command is running.
+
+        Temporary authorization approvals are independent of the execution slot.
+        """
+        now = self.clock()
+        occupied = any(r.status == "running" for r in self._requests.values())
+        waiting = {"pending_approval", "queued_readonly", "queued_authorized"}
         for request in self._requests.values():
-            if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} and self.clock() >= request.expires_monotonic:
+            blocked = (occupied and request.status in waiting
+                       and request.payload.operation != "request_auto_approval")
+            if blocked and request.approval_paused_since is None:
+                request.approval_paused_since = now
+            elif not blocked and request.approval_paused_since is not None:
+                if request.status in waiting:
+                    request.expires_monotonic += max(0.0, now - request.approval_paused_since)
+                request.approval_paused_since = None
+
+    def _approval_remaining_ms(self, request: Request) -> int:
+        now = request.approval_paused_since if request.approval_paused_since is not None else self.clock()
+        return max(0, int((request.expires_monotonic - now) * 1000))
+
+    def _expire(self) -> None:
+        self._sync_approval_pause()
+        for request in self._requests.values():
+            if (request.status in {"pending_approval", "queued_readonly", "queued_authorized"}
+                    and request.approval_paused_since is None and self.clock() >= request.expires_monotonic):
                 request.status = "expired"
                 request.finished_at = timestamp()
                 request.phase = "finished"
@@ -346,6 +372,7 @@ class ApprovalManager:
             self._audit("submitted", request)  # Fail closed if audit cannot be written.
             self._requests[request.id] = request
             self._client_ids[client_request_id] = request.id
+            self._sync_approval_pause()
             self._start_readonly_queue()
             return self._view(request)
 
@@ -672,18 +699,26 @@ class ApprovalManager:
                 except ValueError: pass
 
     def _view(self, request: Request, offset: int = 0, limit: int = 16384) -> dict:
-        stdout = self._output_text(request.stdout, request.status)
-        stderr = self._output_text(request.stderr, request.status)
+        # Avoid repeatedly decoding unchanged multi-megabyte logs on each poll.
+        cache = request.decoded_output_cache
+        key = (len(request.stdout), len(request.stderr),
+               request.status not in {"running", "queued_readonly", "queued_authorized", "pending_approval"})
+        if cache.get("key") != key:
+            cache["key"] = key
+            cache["stdout"] = self._output_text(request.stdout, request.status)
+            cache["stderr"] = self._output_text(request.stderr, request.status)
+        stdout, stderr = cache["stdout"], cache["stderr"]
         return {
             "request_id": request.id, "client_request_id": request.client_request_id,
             **asdict(request.payload), "digest": request.payload.digest(), "status": request.status,
             "created_at": request.created_at, "approved_at": request.approved_at,
             "approval_kind": request.approval_kind,
             "finished_at": request.finished_at, "exit_code": request.exit_code, "error": request.error,
-            "approval_expires_in_seconds": max(0, int(request.expires_monotonic - self.clock()))
+            "approval_expires_in_seconds": self._approval_remaining_ms(request) // 1000
             if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
-            "approval_remaining_ms": max(0, int((request.expires_monotonic - self.clock()) * 1000))
+            "approval_remaining_ms": self._approval_remaining_ms(request)
             if request.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
+            "approval_paused": request.approval_paused_since is not None,
             "approval_timeout_seconds": min(60, self.config.approval_timeout_seconds),
             "stdout": stdout[offset:offset + limit], "stderr": stderr[offset:offset + limit],
             "output_offset": offset, "next_output_offset": offset + limit,
@@ -744,10 +779,11 @@ class ApprovalManager:
                      "runtime_seconds": round((r.ended_monotonic or self.clock())-r.started_monotonic,1) if r.started_monotonic is not None else 0,
                      "termination_requested":r.termination_requested,
                      "grant_id":r.payload.grant_id,
-                     "approval_remaining_ms": max(0, int((r.expires_monotonic - self.clock()) * 1000))
+                     "approval_remaining_ms": self._approval_remaining_ms(r)
                      if r.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0,
+                     "approval_paused": r.approval_paused_since is not None,
                      "approval_timeout_seconds": min(60, self.config.approval_timeout_seconds),
-                     "approval_expires_in_seconds": max(0, int(r.expires_monotonic - self.clock()))
+                     "approval_expires_in_seconds": self._approval_remaining_ms(r) // 1000
                      if r.status in {"pending_approval", "queued_readonly", "queued_authorized"} else 0}
                     for r in reversed(list(self._requests.values()))]
 
@@ -800,6 +836,7 @@ class ApprovalManager:
         if grant:
             grant.uses += 1
         request.status = "running"
+        self._sync_approval_pause()
         request.approved_at = timestamp()
         request.started_monotonic = self.clock()
         request.phase = "connecting"
@@ -1059,6 +1096,7 @@ class ApprovalManager:
                         "checked_at":timestamp(),"error":request.error,
                         "failure_phase":request.phase_history[-1]["phase"] if request.error and request.phase_history else None}
                 self._release_transfer(request)
+                self._sync_approval_pause()
                 try:
                     self._audit("finished", request)
                 except OSError:
