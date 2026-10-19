@@ -80,15 +80,21 @@ class DesktopAPI:
                 tunnel["api_key_saved"] = bool(self._credentials and self._credentials.has(self._TUNNEL_API_KEY_REF))
             except (OSError, ValueError):
                 tunnel["api_key_saved"] = False
+            # Worker threads can update sessions and diagnostics while an unrelated
+            # status probe is in flight. Copy these under the manager's own lock.
+            with self._manager._lock:
+                sessions = [{k: v for k, v in entry.items() if k != "environment"}
+                            | {"environment_keys": list(entry["environment"])}
+                            for entry in self._manager.sessions.values()]
+                diagnostics = dict(self._manager.server_info)
             return {"version": __version__, "uptime_seconds": int(time.monotonic() - self._started),
                     "mcp": self._host.status(), "tunnel": tunnel,
                     "servers": [{**asdict(s), "connected": s.kind == "local" or states.get(s.id, False),
-                                 "last_diagnostics": self._manager.server_info.get(s.id)} for s in config.servers],
+                                 "last_diagnostics": diagnostics.get(s.id)} for s in config.servers],
                     "requests": self._manager.list_summaries(), "prompt": prompt,
                     "authorizations": self._manager.list_auto_approvals()["authorizations"],
                     "transfers": self._manager.transfers.list(),
-                    "sessions": [{k:v for k,v in s.items() if k!="environment"} | {"environment_keys":list(s["environment"])}
-                                 for s in self._manager.sessions.values()],
+                    "sessions": sessions,
                     "settings": {"listen_port": config.listen_port,
                         "auto_allow_readonly": config.auto_allow_readonly,
                         "approval_mode": config.approval_mode,
