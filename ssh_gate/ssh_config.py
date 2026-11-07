@@ -36,6 +36,8 @@ class SSHSettings:
     identities_only: bool = False
     jump_hosts: tuple[SSHSettings, ...] = ()
     config_source: str = ''
+    password_first: bool = False
+    pubkey_authentication: bool = True
 
     @property
     def verification_name(self) -> str:
@@ -214,9 +216,15 @@ def resolve_settings(config: Config, server: Server) -> SSHSettings:
         jump = options.get('proxyjump') or ''
         alias_key = options.get('hostkeyalias', '')
         if alias_key.lower() == 'none': alias_key = ''
+        preferred = [method.strip().lower() for method in options.get('preferredauthentications', '').split(',')
+                     if method.strip()]
+        password_first = 'password' in preferred and (
+            'publickey' not in preferred or preferred.index('password') < preferred.index('publickey'))
+        pubkey_authentication = options.get('pubkeyauthentication', 'yes').lower() not in {'no', 'false'}
         node = SSHSettings(host, user, resolved_port, identities, tuple(known), expand(proxy), alias_key,
                            server.id, alias, options.get('identitiesonly', 'no').lower() == 'yes',
-                           config_source=str(path) if path.is_file() else '')
+                           config_source=str(path) if path.is_file() else '',
+                           password_first=password_first, pubkey_authentication=pubkey_authentication)
         hops = []
         if follow and jump and jump.lower() != 'none' and not proxy:
             for index, entry in enumerate(jump.split(',')):

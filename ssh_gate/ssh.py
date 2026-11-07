@@ -246,9 +246,15 @@ class SSHRunner:
 
         credential_ref = (self.credentials.reference(settings.connection_id, settings.username, settings.hostname, settings.port)
                           if self.credentials and settings.connection_id else "")
+        # A remembered credential is already an explicitly chosen authentication mode.
+        # Trying all discovered keys first can stall password-only bastion hosts for
+        # tens of seconds on every new SSH connection, including ProxyJump hops.
+        saved_credential = (self.credentials.get(credential_ref)
+                            if credential_ref and self.credentials else None)
         saved_tried = False
         prompt_attempt = 0
-        initial_key_attempt = True
+        initial_key_attempt = (saved_credential is None and settings.pubkey_authentication
+                               and not settings.password_first)
         while True:
             if stop.is_set():
                 raise PromptCancelled("已取消连接")
@@ -264,7 +270,8 @@ class SSHRunner:
                 saved = None
                 if credential_ref and not saved_tried:
                     saved_tried = True
-                    saved = self.credentials.get(credential_ref) if self.credentials else None
+                    saved = saved_credential
+                    saved_credential = None
                 if saved:
                     secret, mode, source = saved["secret"], saved["mode"], "saved"
                     progress(phase="authenticating_saved_credential")

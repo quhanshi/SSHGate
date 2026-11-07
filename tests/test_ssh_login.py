@@ -178,9 +178,34 @@ class SSHLoginTests(unittest.TestCase):
         second_prompts = FixturePrompts()
         second = SSHRunner(second_prompts, store)
         self.addCleanup(second.close)
-        result = second(SimpleNamespace(ssh_settings=settings, remote_command="ls", timeout_seconds=3), self.emit, threading.Event())
+        events = []
+        result = second.execute(
+            SimpleNamespace(ssh_settings=settings, remote_command="ls", timeout_seconds=3),
+            self.emit, threading.Event(), lambda **event: events.append(event))
         self.assertEqual(0, result.exit_code, result.error)
         self.assertEqual([], second_prompts.calls)
+        # A cached password must skip the initial key-only SSH connection.
+        self.assertEqual(1, sum(e.get("connection_event", {}).get("event") == "attempt_started"
+                                for e in events))
+        self.assertTrue(any(e.get("connection_event", {}).get("event") == "saved_credential_selected"
+                            for e in events))
+
+    def test_explicit_password_priority_skips_initial_key_probe(self):
+        self.save_key()
+        for kwargs in ({"password_first": True}, {"pubkey_authentication": False}):
+            with self.subTest(settings=kwargs):
+                settings = replace(self.settings, **kwargs)
+                prompts = FixturePrompts()
+                runner = SSHRunner(prompts)
+                self.addCleanup(runner.close)
+                events = []
+                result = runner.execute(
+                    SimpleNamespace(ssh_settings=settings, remote_command="pwd", timeout_seconds=3),
+                    self.emit, threading.Event(), lambda **event: events.append(event))
+                self.assertEqual(0, result.exit_code, result.error)
+                self.assertEqual(["credentials"], [kind for kind, _ in prompts.calls])
+                self.assertEqual(1, sum(e.get("connection_event", {}).get("event") == "attempt_started"
+                                        for e in events))
 
     def test_stale_saved_password_is_removed_before_local_prompt(self):
         self.save_key()
