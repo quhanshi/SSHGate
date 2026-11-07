@@ -154,7 +154,8 @@ class SSHTraceTests(unittest.TestCase):
         self.assertTrue(any(e["event"] == "authentication_retry" and e["data"]["source"] == "saved" for e in events))
         self.assertFalse(store.has(ref))
         self.assertNotIn("stale-secret-not-for-events", json.dumps(events))
-        self.assertEqual(3, events[-1]["attempt"])
+        # Saved password is now tried first, without an extra key-only attempt.
+        self.assertEqual(2, events[-1]["attempt"])
 
     def test_real_tcp_refusal_is_not_reported_as_timeout(self):
         sock = socket.socket()
