@@ -15,6 +15,7 @@ from unittest.mock import patch
 import paramiko
 
 from ssh_gate.config import Config, Server
+from ssh_gate.credentials import CredentialStore
 from ssh_gate.ssh import SSHRunner, SSHSettings, resolve_settings, config_profiles
 from ssh_gate.prompts import PromptCancelled
 from test_ssh_login import SSHFixture, PasswordServer
@@ -75,6 +76,25 @@ class SSHConfigTests(unittest.TestCase):
         direct=self.resolve('10.208.88.201-Direct')
         self.assertEqual('10.208.88.201',direct.hostname);self.assertEqual((),direct.jump_hosts)
         self.assertTrue(direct.identities_only)
+    def test_host_password_preference_and_publickey_toggle(self):
+        self.path.write_text(
+            "Host password-first\n HostName bastion.example\n"
+            " PreferredAuthentications password,publickey\n PubkeyAuthentication no\n"
+            "Host key-first\n HostName worker.example\n"
+            " PreferredAuthentications publickey,password\n")
+        for use_native in (False, True):
+            if use_native and not shutil.which("ssh"):
+                continue
+            if use_native:
+                from dataclasses import replace
+                self.cfg = replace(self.cfg, ssh_executable=shutil.which("ssh"))
+            password = self.resolve("password-first")
+            self.assertTrue(password.password_first)
+            self.assertFalse(password.pubkey_authentication)
+            key = self.resolve("key-first")
+            self.assertFalse(key.password_first)
+            self.assertTrue(key.pubkey_authentication)
+
     def test_include_and_first_value_defaults_and_profile_order(self):
         (self.home/'.ssh/hosts').mkdir();(self.home/'.ssh/hosts/one.conf').write_text(SAMPLE)
         self.path.write_text('Include hosts/*.conf\nHost * !excluded\n Port 9999\n User fallback\n')
@@ -216,6 +236,23 @@ class JumpProtocolTests(unittest.TestCase):
         self.assertNotIn('fixture-jump-password',Path(self.known).read_text())
         self.runner.close_connection('route')
         self.assertFalse(self.runner.connection_states())
+    def test_remembered_password_skips_key_only_attempt_for_both_hops(self):
+        settings = self.settings()
+        store = CredentialStore(Path(self.temp.name) / "credentials")
+        for node, password in ((settings.jump_hosts[0], "fixture-jump-password"),
+                               (settings, "fixture-only-password")):
+            reference = store.reference(node.connection_id, node.username, node.hostname, node.port)
+            store.save(reference, "password", password)
+        self.runner.close()
+        self.runner = SSHRunner(self.prompts, store)
+        result, events, _ = self.run_command(settings)
+        self.assertEqual(0, result.exit_code, result.error)
+        self.assertFalse(any(kind == "credentials" for kind, _ in self.prompts.calls))
+        started = [e for e in events if e.get("connection_event", {}).get("event") == "attempt_started"]
+        self.assertEqual(["jump", "target"], [e["connection_context"]["role"] for e in started])
+        saved = [e for e in events if e.get("connection_event", {}).get("event") == "saved_credential_selected"]
+        self.assertEqual(["jump", "target"], [e["connection_context"]["role"] for e in saved])
+
     def test_two_hop_forwarding_with_independent_authentication(self):
         second=SSHFixture(ForwardServer);second.forwarded=[];second.addresses={};self.addCleanup(second.close)
         settings=self.settings()
