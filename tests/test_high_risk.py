@@ -49,3 +49,33 @@ class HighRiskScreeningTests(unittest.TestCase):
     def test_invalid_shell_syntax_requires_review(self):
         self.assertTrue(requires_local_approval("echo 'unclosed"))
         self.assertTrue(requires_local_approval(""))
+
+
+    def test_connection_disruptions_require_review_in_both_modes(self):
+        for command in (
+            "sudo systemctl stop sshd", "systemctl restart ssh.service",
+            "systemctl restart NetworkManager.service", "service networking restart",
+            "ip link set eth0 down", "ip route flush table main", "ifdown eth0",
+            "nmcli connection down office", "iptables -F", "nft flush ruleset",
+            "pkill sshd", "kill -9 123", "loginctl terminate-user appuser",
+        ):
+            for critical_only in (False, True):
+                with self.subTest(command=command, critical_only=critical_only):
+                    self.assertTrue(requires_local_approval(command, critical_only=critical_only))
+
+    def test_critical_only_trusts_literal_project_scripts(self):
+        for command in (
+            "python verify.py", "python3.12 scripts/check.py", "python -m pytest -q",
+            "uv run pytest -q", "uv run --no-project python scripts/check.py",
+            "bash scripts/deploy.sh", "systemctl restart nginx", "rm -rf build",
+            "ip addr show", "iptables -L",
+        ):
+            with self.subTest(command=command):
+                self.assertFalse(requires_local_approval(command, critical_only=True))
+        for command in (
+            "sudo reboot", "rm -rf /*", "uv run reboot", "uv run bash -c 'reboot'",
+            "python -c 'print(1)'", "sh -c 'reboot'", "rm -rf $(pwd)",
+            "echo ok && systemctl stop sshd",
+        ):
+            with self.subTest(command=command):
+                self.assertTrue(requires_local_approval(command, critical_only=True))

@@ -77,7 +77,42 @@ def _unwrap(words: list[str]) -> list[str] | None:
     return None
 
 
-def _segment_requires_review(tokens: list[str]) -> bool:
+_CONNECTION_UNITS = {"ssh", "sshd", "network", "networking", "networkmanager",
+                     "systemd-networkd", "firewalld", "nftables", "iptables", "ip6tables", "ufw"}
+_SERVICE_CHANGES = {"stop", "restart", "try-restart", "reload", "reload-or-restart",
+                    "try-reload-or-restart", "disable", "mask", "kill"}
+
+
+def _connection_unit(value: str) -> bool:
+    name = value.lower().split("@", 1)[0].split(".", 1)[0]
+    return name in _CONNECTION_UNITS or any(c in value for c in "*?[$")
+
+
+def _connection_risk(program: str, operands: list[str]) -> bool:
+    if program in {"exit", "logout", "kill", "killall", "pkill", "fuser",
+                   "ifdown", "iptables-restore", "ip6tables-restore"}:
+        return True
+    if program == "systemctl" and any(x in _SERVICE_CHANGES for x in operands):
+        return any(_connection_unit(x) for x in operands if not x.startswith("-"))
+    if program == "service" and len(operands) >= 2:
+        return _connection_unit(operands[0]) and operands[1] in _SERVICE_CHANGES
+    if program in _CONNECTION_UNITS and any(x in _SERVICE_CHANGES for x in operands):
+        return True
+    if program == "loginctl":
+        return any(x in {"terminate-session", "terminate-user", "kill-session", "kill-user"} for x in operands)
+    if program == "ip":
+        return any(x in {"down", "delete", "del", "flush", "replace", "change", "set"} for x in operands)
+    if program == "ifconfig":
+        return any(x in {"down", "del", "delete"} for x in operands)
+    if program == "nmcli":
+        return any(x in {"down", "disconnect", "off", "delete", "modify", "reload"} for x in operands)
+    if program in {"iptables", "ip6tables", "nft", "ufw", "firewall-cmd"}:
+        return not any(x in {"-L", "-S", "--list", "list", "status", "--state", "--list-all", "--list-all-zones"} for x in operands) or any(
+            x in {"-F", "-P", "-D", "-I", "-A", "-R", "-X", "flush", "delete", "add", "insert", "replace", "reset", "enable", "disable", "--reload", "--complete-reload"} for x in operands)
+    return False
+
+
+def _segment_requires_review(tokens: list[str], *, critical_only: bool = False) -> bool:
     if not tokens:
         return False
     # Redirections can overwrite sensitive system paths and devices.
@@ -105,14 +140,28 @@ def _segment_requires_review(tokens: list[str]) -> bool:
     if any(c in args[0] for c in ("$", "*", "?", "[", "]", "~")):
         return True
     program, operands = _program(args[0]), args[1:]
+    if _connection_risk(program, operands):
+        return True
+    if critical_only and program in _SHELLS:
+        # Trust literal project scripts only in the explicitly selected mode.
+        return not (operands and not operands[0].startswith("-") and operands[0].endswith(".sh"))
     if program in _SHELLS | _DYNAMIC | _CONTROL | _REVIEW_COMMANDS:
         return True
     # A Python script (including via uv run) is opaque executable code.
     # Ask once for a bounded command-pattern grant instead of silently
     # interpreting "not on the dangerous-command list" as "safe".
     if re.fullmatch(r"python(?:3(?:\.\d+)?)?", program):
+        if critical_only:
+            return not operands or any(x == "-c" or x.startswith("-c") for x in operands)
         return operands not in (["-V"], ["--version"], ["-h"], ["--help"])
     if program in {"uv", "uvx"}:
+        if critical_only and program == "uv" and operands and operands[0] == "run":
+            target = operands[1:]
+            if target in (["--help"], ["-h"]):
+                return False
+            while target and target[0] in {"--no-project", "--no-sync", "--locked", "--frozen", "--offline", "--"}:
+                target = target[1:]
+            return not target or target[0].startswith("-") or _segment_requires_review(target, critical_only=True)
         # uv run [flags] can execute Python, shells and any project-installed binary.
         if program == "uvx" or (operands and operands[0] == "run" and
                                  operands[1:] not in (["--help"], ["-h"])):
@@ -159,7 +208,7 @@ def _segment_requires_review(tokens: list[str]) -> bool:
     return False
 
 
-def requires_local_approval(command: str) -> bool:
+def requires_local_approval(command: str, *, critical_only: bool = False) -> bool:
     """True means review; False means no recognizable high-risk shell operation.
 
     Execution of a trusted-looking binary or script can still be destructive.
@@ -181,7 +230,7 @@ def requires_local_approval(command: str) -> bool:
         if token and all(c in ";&|<>()" for c in token) and token not in _SEPARATORS | _REDIRECT:
             return True
         if token in _SEPARATORS:
-            if _segment_requires_review(segment):
+            if _segment_requires_review(segment, critical_only=critical_only):
                 return True
             segment = []
         elif token in _REDIRECT or token not in {"", "\\"}:
