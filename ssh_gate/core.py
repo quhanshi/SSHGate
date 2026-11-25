@@ -173,13 +173,19 @@ class ApprovalManager:
         if any(s["server_id"] == server_id for s in self.sessions.values()):
             raise ValueError("请先关闭此服务器上的受控会话")
 
+    def _screened_allowed(self, server_id, category, command):
+        mode = {"non_dangerous": "dangerous_only", "critical_screened": "critical_only"}.get(category)
+        return (mode is not None and self.config.approval_mode == mode
+                and "manual_only" not in self.config.server(server_id).auto_categories
+                and not requires_local_approval(command, critical_only=mode == "critical_only"))
+
     def local_save_settings(self, settings: dict) -> None:
         with self._lock:
             previous = self.config.approval_mode
             self.config = write_config(self.config, settings=settings)
-            if previous != self.config.approval_mode and self.config.approval_mode != "dangerous_only":
+            if previous != self.config.approval_mode:
                 for request in self._requests.values():
-                    if request.status == "queued_readonly" and request.payload.policy_category == "non_dangerous":
+                    if request.status == "queued_readonly" and request.payload.policy_category in {"non_dangerous", "critical_screened"}:
                         request.status = "pending_approval"
 
     def local_gui_heartbeat(self) -> None:
@@ -314,11 +320,12 @@ class ApprovalManager:
                 category = decision.category
                 roots = (grant.arguments["repo_path"],)
                 eligible = False
-        if not grant_id and self.config.approval_mode == "dangerous_only" and not requires_local_approval(command):
+        screened_category = {"dangerous_only": "non_dangerous", "critical_only": "critical_screened"}.get(self.config.approval_mode, "")
+        if not grant_id and self._screened_allowed(server_id, screened_category, command):
             # This mode is intentionally lower-assurance than the bounded read-only parser.
             # Do not rewrite the shell text, and recheck it before dispatch.
-            decision = ReadOnlyDecision(True, command, "宽松模式自动放行：仅进行高危特征筛查，不保证命令无副作用", "non_dangerous")
-            category, roots, eligible = "non_dangerous", (), True
+            decision = ReadOnlyDecision(True, command, "宽松模式自动放行：仅进行高危特征筛查，不保证命令无副作用", screened_category)
+            category, roots, eligible = screened_category, (), True
         # Git writes without a temporary grant stay pending until an explicit
         # Windows-local approval, regardless of the repository's remote mix.
         if not grant_id and not eligible and re.match(r"^\s*(?:/usr/bin/|/bin/)?git(?:\s|$)", command):
@@ -367,7 +374,7 @@ class ApprovalManager:
             if payload.grant_id:
                 request.status = "queued_authorized"
             if payload.readonly_eligible and (self.config.auto_allow_readonly or
-                                              (self.config.approval_mode == "dangerous_only" and payload.policy_category == "non_dangerous")):
+                                              (payload.policy_category in {"non_dangerous", "critical_screened"} and self._screened_allowed(payload.server_id, payload.policy_category, payload.command))):
                 request.status = "queued_readonly"
             self._audit("submitted", request)  # Fail closed if audit cannot be written.
             self._requests[request.id] = request
@@ -483,13 +490,12 @@ class ApprovalManager:
 
     def check_execution_authorization(self, payload: Payload) -> None:
         """Called again after SSH preflight, immediately before executing the actual operation."""
-        if payload.policy_category == "non_dangerous":
+        if payload.policy_category in {"non_dangerous", "critical_screened"}:
             with self._lock:
                 locally_approved = any(r.payload is payload and r.approval_kind == "local"
                                        for r in self._requests.values())
-                if not locally_approved and (self.config.approval_mode != "dangerous_only" or
-                        not payload.readonly_eligible or payload.executed_command != payload.command or
-                        requires_local_approval(payload.command)):
+                if not locally_approved and (not payload.readonly_eligible or payload.executed_command != payload.command or
+                        not self._screened_allowed(payload.server_id, payload.policy_category, payload.command)):
                     raise ValueError("宽松自动准入已失效或命令需要审批")
         if not payload.grant_id:
             return
@@ -869,14 +875,13 @@ class ApprovalManager:
                     continue
                 break
             if request.status == "queued_readonly":
-                if request.payload.policy_category == "non_dangerous":
-                    if (self.config.approval_mode != "dangerous_only" or
-                            not request.payload.readonly_eligible or
+                if request.payload.policy_category in {"non_dangerous", "critical_screened"}:
+                    if (not request.payload.readonly_eligible or
                             request.payload.executed_command != request.payload.command or
-                            requires_local_approval(request.payload.command)):
+                            not self._screened_allowed(request.payload.server_id, request.payload.policy_category, request.payload.command)):
                         request.status = "pending_approval"
                         continue
-                    self._start(request, "auto_high_risk_screen")
+                    self._start(request, "auto_critical_risk_screen" if request.payload.policy_category == "critical_screened" else "auto_high_risk_screen")
                     if request.status == "running":
                         break
                     continue

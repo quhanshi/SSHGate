@@ -97,3 +97,17 @@ class LowFrictionApprovalIntegrationTests(unittest.TestCase):
         }), encoding="utf-8")
         with self.assertRaises(ValueError):
             load_config(self.path)
+
+
+    def test_critical_only_auto_admits_trusted_scripts_but_not_disconnects(self):
+        self.manager.local_save_settings({"approval_mode": "critical_only"})
+        for i, command in enumerate(("uv run python verify.py", "python -m pytest -q", "bash deploy.sh")):
+            view = self.submit(command, "critical-ok-%d" % i)
+            self.assertEqual("succeeded", self.done(view)["status"])
+            self.assertEqual("auto_critical_risk_screen", self.manager.get(view["request_id"])["approval_kind"])
+        for i, command in enumerate(("sudo reboot", "rm -rf /*", "systemctl stop sshd", "ip link set eth0 down")):
+            view = self.submit(command, "critical-review-%d" % i)
+            self.assertEqual("pending_approval", view["status"])
+        self.assertEqual(3, len(self.calls))
+        self.manager.local_save_settings({"approval_mode": "dangerous_only"})
+        self.assertEqual("pending_approval", self.submit("python verify.py", "strict-again")["status"])

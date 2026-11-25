@@ -168,8 +168,8 @@ def load_config(path: Path) -> Config:
         ids.add(sid)
     if type(data.get("auto_allow_readonly", True)) is not bool:
         raise ValueError("auto_allow_readonly 必须是 true 或 false")
-    if data.get("approval_mode", "standard") not in {"standard", "dangerous_only"}:
-        raise ValueError("approval_mode 必须是 standard 或 dangerous_only")
+    if data.get("approval_mode", "standard") not in {"standard", "dangerous_only", "critical_only"}:
+        raise ValueError("approval_mode 必须是 standard、dangerous_only 或 critical_only")
     ui = data.get("ui", {})
     if not isinstance(ui, dict) or type(ui.get("motion_enabled", True)) is not bool:
         raise ValueError("ui.motion_enabled 必须是布尔值")
